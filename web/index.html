@@ -1,1 +1,87 @@
-<!-- placeholder: replaced by Pro v2 upload -->
+<!DOCTYPE html>
+<html lang="hi">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>VISHAL AI — Aapka Personal AI Agent | Pro v2</title>
+<meta name="description" content="Vishal AI — Hindi aur English me AI chat, YouTube script, business help, study help. Telegram aur Website, ek hi AI dimaag.">
+<style>
+:root{--bg:#070812;--card:#12122b;--card2:#1a1a3a;--acc:#7c5cff;--acc2:#00c2a8;--txt:#f2f2fa;--mut:#a7a7c7;--line:#2a2a4d}
+*{box-sizing:border-box}body{margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;background:var(--bg);color:var(--txt)}
+header{padding:22px 16px 10px;text-align:center}
+h1{margin:0;font-size:32px;letter-spacing:1px}
+.sub{color:var(--mut);margin:6px 0 0;font-size:14px}
+.badge{display:inline-block;margin-top:10px;background:#0f352d;color:#4be3c3;border:1px solid #1d5c4d;padding:5px 12px;border-radius:999px;font-size:12px;font-weight:700}
+.hero{margin:14px auto 0;max-width:720px;padding:0 14px}
+.features{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:14px 16px}
+.features h2{margin:0 0 8px;font-size:16px}
+.features ul{margin:0;padding-left:18px;color:var(--mut);line-height:1.75;font-size:14px}
+.modes{display:flex;gap:8px;flex-wrap:wrap;justify-content:center;margin:16px auto 8px;max-width:720px;padding:0 12px}
+.chip{border:1px solid var(--line);background:var(--card2);color:var(--txt);padding:8px 12px;border-radius:999px;cursor:pointer;font-size:13px}
+.chip.on{background:var(--acc);border-color:var(--acc);font-weight:700}
+#chat{max-width:720px;margin:8px auto;height:46vh;overflow-y:auto;padding:12px;display:flex;flex-direction:column;gap:10px}
+.msg{max-width:86%;padding:11px 13px;border-radius:14px;line-height:1.55;font-size:15px;white-space:pre-wrap;word-wrap:break-word}
+.msg.ai{background:var(--card);border:1px solid var(--line);align-self:flex-start}
+.msg.me{background:var(--acc);align-self:flex-end}
+.msg small{display:block;margin-top:7px}
+.msg button{background:transparent;border:1px solid var(--line);color:var(--mut);border-radius:8px;padding:3px 8px;cursor:pointer;font-size:12px;margin-right:6px}
+.bar{position:sticky;bottom:0;background:linear-gradient(transparent,var(--bg) 30%);padding:12px}
+.bar-in{max-width:720px;margin:0 auto;display:flex;gap:8px}
+textarea{flex:1;background:var(--card);border:1px solid var(--line);color:var(--txt);border-radius:12px;padding:12px;font-size:15px;resize:none;height:52px;font-family:inherit}
+button.send{background:var(--acc2);color:#04231e;border:0;border-radius:12px;padding:0 16px;font-weight:800;cursor:pointer;font-size:15px}
+button.mic{background:var(--card2);color:var(--txt);border:1px solid var(--line);border-radius:12px;padding:0 13px;cursor:pointer;font-size:18px}
+.note{max-width:720px;margin:4px auto 0;padding:0 14px;color:var(--mut);font-size:12px;text-align:center;line-height:1.6}
+a.tg{display:inline-block;margin-top:8px;background:#229ed9;color:#fff;text-decoration:none;padding:10px 16px;border-radius:12px;font-weight:700;font-size:14px}
+.typing{color:var(--mut);font-size:13px;padding:0 14px;max-width:720px;margin:0 auto;display:none}
+</style>
+</head>
+<body>
+<header>
+  <h1>VISHAL AI</h1>
+  <p class="sub">PERSONAL AI ASSISTANT · PRO VERSION 2.0<br>आपका Personal AI Agent — Telegram + Website, एक ही AI दिमाग</p>
+  <span class="badge">Free-tier architecture · ₹0 shuruaati kharch</span>
+</header>
+
+<div class="hero">
+  <div class="features">
+    <h2>मुख्य सुविधाएँ</h2>
+    <ul>
+      <li>AI चैट: हिंदी और अंग्रेजी — सामान्य सवाल, लेखन, कोडिंग (HTML/CSS/JS) सहायता</li>
+      <li>YouTube स्क्रिप्ट और SEO — titles, hooks, description, hashtags</li>
+      <li>टेक्स्ट और डॉक्यूमेंट सहायता, Study और Business help</li>
+      <li>Telegram Bot — Lead form, Appointment, Customer Support (business link से)</li>
+      <li>Voice input: नीचे 🎤 दबाकर बोलकर सवाल पूछें (browser feature, कोई extra cost नहीं)</li>
+      <li>सच: यह version live internet browse नहीं करता — Research mode आपके दिए text पर काम करता है</li>
+    </ul>
+    <div style="text-align:center"><a class="tg" href="https://t.me/VishalSahayakBot" target="_blank" rel="noopener">✈️ Telegram पर खोलें — @VishalSahayakBot</a></div>
+  </div>
+</div>
+
+<div class="modes" id="modes"></div>
+<div class="typing" id="typing">Vishal soch raha hai…</div>
+<div id="chat"></div>
+
+<div class="bar"><div class="bar-in">
+  <button class="mic" id="mic" title="Bolkar likhein">🎤</button>
+  <textarea id="q" placeholder="Apna sawal yahan likhein… / Type your question…"></textarea>
+  <button class="send" id="send">Bhejein</button>
+</div>
+<p class="note">Free limit: 30 jawab / din per visitor (server quota bachane ke liye) · AI galti kar sakta hai, zaroori baat verify karein · API key server par rehti hai, browser me kabhi nahi jati</p>
+</div>
+
+<script>
+const MODES=[["chat","💬 AI Chat"],["translator","🔤 Translator"],["youtube","🎬 YouTube Creator"],["business","💼 Business"],["study","📚 Study"],["research","🔎 Research"]];
+let mode="chat";
+const modesEl=document.getElementById('modes'),chatEl=document.getElementById('chat'),qEl=document.getElementById('q');
+MODES.forEach(([k,label])=>{const b=document.createElement('button');b.className='chip'+(k===mode?' on':'');b.textContent=label;b.onclick=()=>{mode=k;document.querySelectorAll('.chip').forEach(c=>c.classList.remove('on'));b.classList.add('on');add('ai','Mode ON: '+label+'. Apna sawal likhein 👇')};modesEl.appendChild(b)});
+function add(who,text){const d=document.createElement('div');d.className='msg '+who;d.textContent=text;if(who==='ai'){const s=document.createElement('small');const c=document.createElement('button');c.textContent='📋 Copy';c.onclick=()=>navigator.clipboard&&navigator.clipboard.writeText(text);const v=document.createElement('button');v.textContent='🔊 Suno';v.onclick=()=>{try{const u=new SpeechSynthesisUtterance(text.slice(0,600));u.lang=/[\u0900-\u097F]/.test(text)?'hi-IN':'en-IN';speechSynthesis.speak(u)}catch(e){}};s.appendChild(c);s.appendChild(v);d.appendChild(s)}chatEl.appendChild(d);chatEl.scrollTop=chatEl.scrollHeight;return d}
+add('ai','🙏 Namaste! Main hoon Vishal AI. Upar se mode chunein ya seedha apna sawal likhein — Hindi ya English, dono chalega.');
+async function send(){const text=qEl.value.trim();if(!text)return;qEl.value='';add('me',text);const t=document.getElementById('typing');t.style.display='block';
+ try{const r=await fetch('/api/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({mode,message:text})});const j=await r.json();add('ai',j.reply||'⚠️ Jawab nahi aaya, phir try karein.')}
+ catch(e){add('ai','⚠️ Network dikkat hai. Internet check karke phir try karein.')}finally{t.style.display='none'}}
+document.getElementById('send').onclick=send;
+qEl.addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();send()}});
+document.getElementById('mic').onclick=()=>{const SR=window.SpeechRecognition||window.webkitSpeechRecognition;if(!SR){alert('Is browser me voice input support nahi hai — Chrome (Android) me try karein.');return}const rec=new SR();rec.lang='hi-IN';rec.onresult=e=>{qEl.value=e.results[0][0].transcript};rec.onerror=()=>alert('Voice sun nahi paya, phir try karein.');rec.start()};
+</script>
+</body>
+</html>
