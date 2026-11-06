@@ -620,7 +620,7 @@ class HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path in ("/health", "/healthz"):
             return self._json(200, {"status": "ok",
-                                    "service": "Vishal AI Assistant Pro v2"})
+                                    "service": "Vishal AI Assistant Pro v2.1"})
         if self.path in ("/", "/index.html"):
             try:
                 with open(os.path.join(WEB_DIR, "index.html"), "rb") as f:
@@ -634,7 +634,7 @@ class HealthHandler(BaseHTTPRequestHandler):
             except Exception as exc:
                 log.warning("Web UI serve failed: %s", type(exc).__name__)
                 return self._json(200, {"status": "ok",
-                                        "service": "Vishal AI Assistant Pro v2"})
+                                        "service": "Vishal AI Assistant Pro v2.1"})
         return self._json(404, {"error": "not found"})
 
     def do_POST(self):
