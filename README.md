@@ -1,4 +1,6 @@
-# Vishal AI Assistant — All-in-One AI Personal Agent (Telegram)
+# Vishal AI Assistant — Pro v2: All-in-One AI Personal Agent (Telegram + Website)
+
+**Pro v2 naya:** Website chat UI usi backend par (`web/index.html`, `/api/chat`, `/health`), Voice input (browser), Copy/Suno buttons. Vivaran: `docs/09-PRO-V2-WEBSITE.md`. Local tests: 18/18 PASS (v1 ke 14 + web ke 4). Live deploy owner ke 'deploy karo' kehne par hi hoga — tab tak live par v1 Telegram bot hi chal raha hai.
 
 Hindi + English Telegram bot for small businesses, coaching institutes, shop
 owners and content creators. Built on a **₹0 stack**: Telegram Bot API +

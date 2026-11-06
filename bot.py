@@ -27,7 +27,8 @@ import json
 import logging
 import threading
 import time
-from http.server import BaseHTTPRequestHandler, HTTPServer
+import os
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import requests
 
@@ -577,13 +578,83 @@ def handle_lang_callback(cb):
 # ----------------------------------------------------------------------
 # Health endpoint (free hosts need a web port) + polling loop
 # ----------------------------------------------------------------------
+# ----------------------------------------------------------------------
+# Pro v2 web layer: Website chat UI + /api/chat on the SAME backend.
+# Telegram aur Website ek hi AI (Groq -> Gemini fallback) use karte hain.
+# API key sirf server env me rehti hai - browser ko kabhi nahi jati.
+# ----------------------------------------------------------------------
+WEB_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web")
+WEB_DAILY_LIMIT = int(os.environ.get("WEB_DAILY_LIMIT", "30"))
+_web_usage = {}  # "YYYY-MM-DD:<ip>" -> count (in-memory, resets on restart)
+
+
+def _web_rate_ok(ip):
+    import datetime
+    key = f"{datetime.date.today().isoformat()}:{ip}"
+    if _web_usage.get(key, 0) >= WEB_DAILY_LIMIT:
+        return False
+    _web_usage[key] = _web_usage.get(key, 0) + 1
+    return True
+
+
+def web_chat(mode, message):
+    """Website ke liye AI jawab. Support mode website par band hai -
+    woh sirf business ke Telegram link se chalta hai."""
+    if mode not in ("chat", "translator", "youtube", "business", "study", "research"):
+        mode = "chat"
+    messages = [{"role": "system", "content": build_system_prompt(mode)},
+                {"role": "user", "content": message}]
+    text, _provider = ai.chat(messages, quality=mode in QUALITY_MODES)
+    return text
+
+
 class HealthHandler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        self.send_response(200)
-        self.send_header("Content-Type", "application/json")
+    def _json(self, code, obj):
+        body = json.dumps(obj, ensure_ascii=False).encode("utf-8")
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
         self.end_headers()
-        self.wfile.write(json.dumps(
-            {"status": "ok", "service": "Vishal AI Assistant"}).encode())
+        self.wfile.write(body)
+
+    def do_GET(self):
+        if self.path in ("/health", "/healthz"):
+            return self._json(200, {"status": "ok",
+                                    "service": "Vishal AI Assistant Pro v2"})
+        if self.path in ("/", "/index.html"):
+            try:
+                with open(os.path.join(WEB_DIR, "index.html"), "rb") as f:
+                    body = f.read()
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                return
+            except Exception as exc:
+                log.warning("Web UI serve failed: %s", type(exc).__name__)
+                return self._json(200, {"status": "ok",
+                                        "service": "Vishal AI Assistant Pro v2"})
+        return self._json(404, {"error": "not found"})
+
+    def do_POST(self):
+        if self.path != "/api/chat":
+            return self._json(404, {"error": "not found"})
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+            payload = json.loads(self.rfile.read(length) or b"{}")
+        except Exception:
+            return self._json(400, {"reply": "⚠️ Request samajh nahi aayi."})
+        message = str(payload.get("message") or "").strip()
+        mode = str(payload.get("mode") or "chat")
+        if not message:
+            return self._json(400, {"reply": "⚠️ Pehle apna sawal likhein."})
+        if len(message) > Config.MAX_INPUT_CHARS:
+            return self._json(400, {"reply": f"⚠️ Message bahut lamba hai (max {Config.MAX_INPUT_CHARS} characters)."})
+        ip = (self.headers.get("X-Forwarded-For") or self.client_address[0]).split(",")[0].strip()
+        if not _web_rate_ok(ip):
+            return self._json(429, {"reply": "⏳ Aaj ki free website limit (30/din) khatm ho gayi hai. Telegram bot par bina is limit ke mode use karein: https://t.me/VishalSahayakBot"})
+        return self._json(200, {"reply": web_chat(mode, message)})
 
     def log_message(self, *args):
         pass
@@ -591,7 +662,7 @@ class HealthHandler(BaseHTTPRequestHandler):
 
 def start_health_server():
     try:
-        HTTPServer(("0.0.0.0", Config.PORT), HealthHandler).serve_forever()
+        ThreadingHTTPServer(("0.0.0.0", Config.PORT), HealthHandler).serve_forever()
     except Exception as exc:
         log.warning("Health server failed: %s", type(exc).__name__)
 
