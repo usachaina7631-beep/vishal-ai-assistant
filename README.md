@@ -1,6 +1,4 @@
-# Vishal AI Assistant — Pro v2: All-in-One AI Personal Agent (Telegram + Website)
-
-**Pro v2 naya:** Website chat UI usi backend par (`web/index.html`, `/api/chat`, `/health`), Voice input (browser), Copy/Suno buttons. Vivaran: `docs/09-PRO-V2-WEBSITE.md`. Local tests: 18/18 PASS (v1 ke 14 + web ke 4). Live deploy owner ke 'deploy karo' kehne par hi hoga — tab tak live par v1 Telegram bot hi chal raha hai.
+# Vishal AI Assistant — All-in-One AI Personal Agent (Telegram)
 
 Hindi + English Telegram bot for small businesses, coaching institutes, shop
 owners and content creators. Built on a **₹0 stack**: Telegram Bot API +
@@ -13,10 +11,14 @@ Telegram-native admin dashboard — fully manageable from an Android phone.
 💼 Business Assistant · 🛎️ Per-business Customer Support ·
 📝 Lead Generation form · 📅 Appointment Requests with owner confirm ·
 📚 Study Assistant · 🔎 Research Assistant (on pasted text) ·
+📸 Photo Enhance (local, Pillow) · 📖 Book Search (legal links only) ·
+🧠 DeepSeek AI Chat engine (optional, `/deepseek`) ·
+🗓 Daily Class Schedule (`/schedule`, IST, live class marked) ·
+📝 GK Quiz (`/quiz`, 10 sawal per session, original question bank, score) ·
 🛠️ Admin Dashboard (stats, leads, CSV export, broadcast, plan control)
 
 ## Status (honest)
-Code complete. **14/14 local unit tests pass** (validation, business data
+Code complete. **44/44 local unit tests pass** (validation, business data
 isolation, AI fallback, limits, memory). Live Telegram integration is
 **pending owner setup** — it needs YOUR BotFather token and free AI keys,
 which must never be shared in chat. Follow `docs/02-SETUP.md`, then verify
@@ -29,6 +31,22 @@ cp .env.example .env   # fill in your token + keys in the file, never in chat
 python bot.py
 python -m unittest discover tests -v   # run the test suite
 ```
+
+## Optional: enable DeepSeek
+AI Chat runs on the Groq→Gemini chain by default. To ALSO offer the
+DeepSeek engine (users switch with `/deepseek` inside the bot):
+
+1. Create an API key — either the **official DeepSeek API**
+   (platform.deepseek.com — paid, pay-as-you-go) or an **OpenRouter**
+   key (openrouter.ai — free tier available).
+2. In the **Render** dashboard → your service → **Environment**, set
+   `DEEPSEEK_API_KEY` to that key. For the OpenRouter route, also set
+   `DEEPSEEK_API_BASE=https://openrouter.ai/api/v1` and
+   `DEEPSEEK_MODEL` to a DeepSeek free model id.
+3. **Redeploy.** Users can then type `/deepseek` for DeepSeek answers
+   and `/chat` to return to the default engine. Without the key,
+   `/deepseek` simply replies that DeepSeek is not enabled yet — the
+   rest of the bot is unaffected. Never paste the key anywhere else.
 
 ## Docs
 1. `docs/01-ARCHITECTURE.md` — architecture + what ₹0 can and cannot do

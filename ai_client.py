@@ -8,6 +8,10 @@ Either key alone is enough. Model routing:
 On HTTP 429 (rate limit) or any provider error, the next provider is
 tried once. If everything fails, a clear bilingual error is returned -
 the bot never crashes and never leaks the API key or raw error body.
+
+DeepSeek is an OPTIONAL extra engine, deliberately kept OUT of the
+default chain above: it is used only via chat_deepseek() when the user
+explicitly picks it (/deepseek in the bot) and DEEPSEEK_API_KEY is set.
 """
 import logging
 import requests
@@ -63,6 +67,37 @@ class AIClient:
         resp.raise_for_status()
         data = resp.json()
         return data["candidates"][0]["content"]["parts"][0]["text"].strip()
+
+    # ---- DeepSeek (optional, OpenAI-compatible) ----
+    def _deepseek(self, messages, timeout=60):
+        base = (Config.DEEPSEEK_API_BASE or "https://api.deepseek.com").rstrip("/")
+        resp = self.session.post(
+            f"{base}/chat/completions",
+            headers={"Authorization": f"Bearer {Config.DEEPSEEK_API_KEY}",
+                     "Content-Type": "application/json"},
+            json={"model": Config.DEEPSEEK_MODEL, "messages": messages,
+                  "temperature": 0.6, "max_tokens": 1200},
+            timeout=timeout,
+        )
+        resp.raise_for_status()
+        return resp.json()["choices"][0]["message"]["content"].strip()
+
+    @staticmethod
+    def deepseek_available():
+        """True only when the admin has set DEEPSEEK_API_KEY."""
+        return bool(Config.DEEPSEEK_API_KEY)
+
+    def chat_deepseek(self, messages):
+        """DeepSeek-only chat: (text, 'deepseek') or (ERROR_MSG, None).
+        Never raises and never falls back to Groq/Gemini - the user
+        explicitly chose this engine."""
+        if not Config.DEEPSEEK_API_KEY:
+            return ERROR_MSG, None
+        try:
+            return self._deepseek(messages), "deepseek"
+        except Exception as exc:  # log type only - never the key/body
+            log.warning("AI provider deepseek failed: %s", type(exc).__name__)
+            return ERROR_MSG, None
 
     # ---- Public API ----
     def chat(self, messages, quality=False):
