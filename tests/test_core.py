@@ -616,5 +616,239 @@ class TestGKQuiz(unittest.TestCase):
         self.assertEqual(bot.modes.get(self.UID), "chat")
 
 
+class TestGroupQuiz(unittest.TestCase):
+    CHAT = -100777001
+    STARTER = 987111
+    OTHER = 987222
+    ADMIN = 111  # tests ke env ADMIN_IDS=111
+
+    def tearDown(self):
+        import bot
+        bot.group_sessions.clear()
+        bot.group_poll_chats.clear()
+
+    def _msg(self, text, uid=None, chat=None):
+        return {"chat": {"id": self.CHAT if chat is None else chat},
+                "from": {"id": self.STARTER if uid is None else uid,
+                         "username": "gq", "first_name": "G"},
+                "text": text}
+
+    def _fake_tg(self, calls):
+        def fake_tg(method, **kwargs):
+            calls.append((method, kwargs))
+            if method == "sendPoll":
+                n = sum(1 for m, _ in calls if m == "sendPoll")
+                return {"ok": True, "result": {"poll": {"id": f"poll-{n}"}}}
+            return {"ok": True, "result": {}}
+        return fake_tg
+
+    def _fake_thread_cls(self, bag):
+        class FakeThread:
+            def __init__(self, target=None, args=(), daemon=None):
+                self.target, self.args = target, args
+                bag.append(self)
+
+            def start(self):
+                pass
+        return FakeThread
+
+    def _start(self, text="/groupquiz 5", uid=None, chat=None):
+        import bot
+        calls, threads = [], []
+        with patch("bot.send") as mock_send, \
+                patch("bot.tg", side_effect=self._fake_tg(calls)), \
+                patch.object(bot.threading, "Thread",
+                             self._fake_thread_cls(threads)):
+            bot.handle_message(self._msg(text, uid=uid, chat=chat))
+        polls = [kw for m, kw in calls if m == "sendPoll"]
+        sent = [c[0][1] for c in mock_send.call_args_list]
+        return polls, threads, sent
+
+    # --- pure: poll payload ---
+    def test_poll_payload_shape(self):
+        import bot
+        q = bot.QUIZ_QUESTIONS[0]
+        p = bot.group_poll_payload(123, q, 0, 10)
+        self.assertEqual(p["chat_id"], 123)
+        self.assertEqual(p["type"], "quiz")
+        self.assertEqual(p["correct_option_id"], q["answer"])
+        self.assertEqual(p["open_period"], 30)
+        self.assertIs(p["is_anonymous"], False)
+        self.assertEqual(p["question"], f"Sawal 1/10: {q['q']}")
+        self.assertEqual(list(p["options"]), q["options"])
+        self.assertLessEqual(len(p["explanation"]), 200)
+
+    def test_poll_payload_long_explanation_truncated(self):
+        import bot
+        long_q = {"q": "Lamba sawal?", "options": ["a", "b", "c", "d"],
+                  "answer": 2, "why": "x" * 500}
+        p = bot.group_poll_payload(1, long_q, 2, 7)
+        self.assertEqual(p["question"], "Sawal 3/7: Lamba sawal?")
+        self.assertEqual(p["correct_option_id"], 2)
+        self.assertLessEqual(len(p["explanation"]), 200)
+
+    # --- pure: scoring ---
+    def _session(self):
+        return {"poll_id": "p1", "correct": 2, "posted_at": 1000.0,
+                "answered": set(), "scores": {}}
+
+    def test_record_answer_correct_wrong_duplicate(self):
+        import bot
+        s = self._session()
+        # sahi jawab: +1 score aur laga samay judta hai
+        self.assertTrue(bot.group_record_answer(s, 1, "Ram", [2], now=1005.0))
+        self.assertEqual(s["scores"][1]["correct"], 1)
+        self.assertEqual(s["scores"][1]["time"], 5.0)
+        # usi poll par dusra jawab ignore
+        self.assertFalse(bot.group_record_answer(s, 1, "Ram", [0], now=1006.0))
+        self.assertEqual(s["scores"][1]["correct"], 1)
+        self.assertEqual(s["scores"][1]["time"], 5.0)
+        # galat jawab: na score, na samay
+        self.assertTrue(bot.group_record_answer(s, 2, "Shyam", [0], now=1007.0))
+        self.assertEqual(s["scores"][2]["correct"], 0)
+        self.assertEqual(s["scores"][2]["time"], 0.0)
+        # khaali option_ids bhi crash nahi karta, galat hi ginti hai
+        self.assertTrue(bot.group_record_answer(s, 3, "Gita", [], now=1008.0))
+        self.assertEqual(s["scores"][3]["correct"], 0)
+        # agla poll: wahi user phir jawab de sakta hai
+        s["poll_id"] = "p2"
+        self.assertTrue(bot.group_record_answer(s, 1, "Ram", [2], now=1010.0))
+        self.assertEqual(s["scores"][1]["correct"], 2)
+
+    def test_poll_answer_routing_and_unknown_poll_ignored(self):
+        import bot
+        q = bot.QUIZ_QUESTIONS[0]
+        bot.group_sessions[self.CHAT] = {
+            "questions": [q], "index": 0, "poll_id": "poll-X",
+            "correct": q["answer"], "posted_at": 500.0,
+            "scores": {}, "answered": set(), "starter_id": self.STARTER,
+            "generation": 1, "active": True}
+        bot.group_poll_chats["poll-X"] = self.CHAT
+        bot.handle_poll_answer({"poll_id": "poll-X",
+                                "user": {"id": 42, "first_name": "Ram"},
+                                "option_ids": [q["answer"]]})
+        entry = bot.group_sessions[self.CHAT]["scores"][42]
+        self.assertEqual(entry["correct"], 1)
+        self.assertEqual(entry["name"], "Ram")
+        self.assertGreater(entry["time"], 0)
+        # anjaan poll ka jawab: chup-chaap ignore, koi entry nahi
+        bot.handle_poll_answer({"poll_id": "poll-UNKNOWN",
+                                "user": {"id": 43, "first_name": "X"},
+                                "option_ids": [0]})
+        self.assertNotIn(43, bot.group_sessions[self.CHAT]["scores"])
+        # wahi user dobara tap kare to score nahi badhta
+        bot.handle_poll_answer({"poll_id": "poll-X",
+                                "user": {"id": 42, "first_name": "Ram"},
+                                "option_ids": [q["answer"]]})
+        self.assertEqual(bot.group_sessions[self.CHAT]["scores"][42]["correct"], 1)
+
+    # --- pure: leaderboard ---
+    def test_leaderboard_sorting_medals_and_empty(self):
+        import bot
+        scores = {
+            1: {"name": "Asha", "correct": 8, "time": 50.0},
+            2: {"name": "Bina", "correct": 8, "time": 40.0},
+            3: {"name": "Chand", "correct": 9, "time": 90.0},
+            4: {"name": "Deep", "correct": 1, "time": 5.0},
+        }
+        lines = bot.group_leaderboard_text(scores, 10).splitlines()
+        self.assertIn("Quiz khatm", lines[0])
+        self.assertIn("🥇 Chand – 9/10 sahi (90 sec)", lines[1])
+        self.assertIn("🥈 Bina – 8/10 sahi (40 sec)", lines[2])  # tez = upar
+        self.assertIn("🥉 Asha – 8/10 sahi (50 sec)", lines[3])
+        self.assertIn("4. Deep – 1/10 sahi (5 sec)", lines[4])
+        empty = bot.group_leaderboard_text({}, 10)
+        self.assertIn("kisi ne koi jawab nahi diya", empty)
+
+    # --- session flow (API mocked) ---
+    def test_groupquiz_start_posts_intro_and_first_poll(self):
+        import bot
+        polls, threads, sent = self._start("/groupquiz 5")
+        self.assertTrue(any("GK Group Quiz shuru" in s and "5 sawal" in s
+                            for s in sent))
+        self.assertEqual(len(polls), 1)
+        self.assertEqual(polls[0]["chat_id"], self.CHAT)
+        self.assertEqual(polls[0]["type"], "quiz")
+        self.assertTrue(polls[0]["question"].startswith("Sawal 1/5:"))
+        session = bot.group_sessions[self.CHAT]
+        self.assertEqual(len(session["questions"]), 5)
+        self.assertEqual(session["poll_id"], "poll-1")
+        self.assertEqual(session["starter_id"], self.STARTER)
+        self.assertTrue(session["active"])
+        self.assertEqual(bot.group_poll_chats.get("poll-1"), self.CHAT)
+        self.assertEqual(len(threads), 1)  # advance timer laga
+
+    def test_groupquiz_count_clamped(self):
+        import bot
+        self._start("/groupquiz 2", chat=-100777002)
+        self.assertEqual(len(bot.group_sessions[-100777002]["questions"]),
+                         bot.GROUP_QUIZ_MIN)
+        self._start("/groupquiz 99", chat=-100777003)
+        self.assertEqual(len(bot.group_sessions[-100777003]["questions"]), 35)
+
+    def test_second_groupquiz_refused_while_active(self):
+        import bot
+        self._start("/groupquiz 5")
+        calls = []
+        with patch("bot.send") as mock_send, \
+                patch("bot.tg", side_effect=self._fake_tg(calls)):
+            bot.handle_message(self._msg("/groupquiz"))
+        sent = [c[0][1] for c in mock_send.call_args_list]
+        self.assertTrue(any("pehle se ek quiz chal raha hai" in s
+                            for s in sent))
+        self.assertEqual([m for m, _ in calls if m == "sendPoll"], [])
+        self.assertEqual(len(bot.group_sessions[self.CHAT]["questions"]), 5)
+
+    def test_timer_advances_and_finishes_quiz(self):
+        import bot
+        calls, threads = [], []
+        with patch("bot.send") as mock_send, \
+                patch("bot.tg", side_effect=self._fake_tg(calls)), \
+                patch.object(bot.threading, "Thread",
+                             self._fake_thread_cls(threads)), \
+                patch("time.sleep", lambda s: None):
+            bot.handle_message(self._msg("/groupquiz 3"))
+            for _ in range(3):
+                t = threads[-1]
+                t.target(*t.args)  # timer turant chalao
+        polls = [kw for m, kw in calls if m == "sendPoll"]
+        self.assertEqual(len(polls), 3)
+        self.assertTrue(polls[0]["question"].startswith("Sawal 1/3:"))
+        self.assertTrue(polls[2]["question"].startswith("Sawal 3/3:"))
+        sent = [c[0][1] for c in mock_send.call_args_list]
+        self.assertTrue(any("Quiz khatm" in s for s in sent))
+        self.assertNotIn(self.CHAT, bot.group_sessions)
+
+    def test_stopgroupquiz_by_starter_clears_and_kills_timer(self):
+        import bot
+        _polls, threads, _sent = self._start("/groupquiz 5")
+        self.assertIn(self.CHAT, bot.group_sessions)
+        gen_before = bot._group_quiz_gen
+        with patch("bot.send") as mock_send:
+            bot.handle_message(self._msg("/stopgroupquiz"))
+        self.assertIn("rok diya gaya", mock_send.call_args[0][1])
+        self.assertNotIn(self.CHAT, bot.group_sessions)
+        self.assertGreater(bot._group_quiz_gen, gen_before)  # gen badha
+        # purana timer ab chal bhi jaye to kuch post nahi hona chahiye
+        calls = []
+        with patch("bot.tg", side_effect=self._fake_tg(calls)), \
+                patch("bot.send"), patch("time.sleep", lambda s: None):
+            threads[0].target(*threads[0].args)
+        self.assertEqual([m for m, _ in calls if m == "sendPoll"], [])
+        self.assertNotIn(self.CHAT, bot.group_sessions)
+
+    def test_stopgroupquiz_denied_for_non_starter_admin_allowed(self):
+        import bot
+        self._start("/groupquiz 5")
+        with patch("bot.send") as mock_send:
+            bot.handle_message(self._msg("/stopgroupquiz", uid=self.OTHER))
+        self.assertIn(self.CHAT, bot.group_sessions)  # quiz abhi bhi ON
+        self.assertNotIn("rok diya gaya", mock_send.call_args[0][1])
+        with patch("bot.send") as mock_send:
+            bot.handle_message(self._msg("/stopgroupquiz", uid=self.ADMIN))
+        self.assertNotIn(self.CHAT, bot.group_sessions)
+        self.assertIn("rok diya gaya", mock_send.call_args[0][1])
+
+
 if __name__ == "__main__":
     unittest.main()
