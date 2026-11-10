@@ -1,5 +1,12 @@
 """
-SQLite data layer.
+SQLite data layer (local file, or Turso when configured).
+
+Backend selection: if BOTH a Turso database URL and auth token are
+supplied (Config.TURSO_DATABASE_URL / TURSO_AUTH_TOKEN), the bot talks
+to Turso over libsql - a permanent database that survives redeploys on
+ephemeral hosts like Render free. If either value is missing, it falls
+back to the plain local SQLite file, exactly as before. All SQL stays
+SQLite dialect, so the two backends are interchangeable.
 
 Isolation rule: EVERY row is keyed by telegram user id and/or business
 code. A customer bound to business A can never read business B's FAQs,
@@ -84,34 +91,81 @@ CREATE TABLE IF NOT EXISTS usage (
     ai_calls    INTEGER DEFAULT 0,
     PRIMARY KEY (user_id, day)
 );
-CREATE TABLE IF NOT EXISTS documents (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    business_code TEXT NOT NULL,
-    name        TEXT NOT NULL,
-    chunk_count INTEGER DEFAULT 0,
-    created_at  TEXT DEFAULT CURRENT_TIMESTAMP
-);
-CREATE TABLE IF NOT EXISTS doc_chunks (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    doc_id      INTEGER NOT NULL REFERENCES documents(id),
-    business_code TEXT NOT NULL,
-    doc_name    TEXT NOT NULL,
-    chunk_index INTEGER NOT NULL,
-    text        TEXT NOT NULL,
-    embedding   TEXT
-);
-CREATE INDEX IF NOT EXISTS idx_chunks_business ON doc_chunks(business_code);
-CREATE INDEX IF NOT EXISTS idx_chunks_doc ON doc_chunks(doc_id);
 """
 
-# Plan-wise document limits for /adddoc (Pro v3 RAG).
-DOC_LIMITS = {"free": 1, "lite": 3, "standard": 10, "premium": 25}
+
+class _RowCursor:
+    """Wraps a libsql cursor so rows come back as plain dicts.
+
+    libsql (0.1.x) has no row_factory and returns plain tuples, while
+    the rest of this codebase expects sqlite3.Row-style access
+    (row["col"] and dict(row)). Converting via cursor.description at
+    fetch time gives both, without touching any query call site.
+    """
+
+    def __init__(self, cursor):
+        self._cursor = cursor
+        desc = cursor.description or []
+        self._cols = [d[0] for d in desc]
+
+    @property
+    def lastrowid(self):
+        return self._cursor.lastrowid
+
+    def _wrap(self, row):
+        if row is None:
+            return None
+        return dict(zip(self._cols, row))
+
+    def fetchone(self):
+        return self._wrap(self._cursor.fetchone())
+
+    def fetchall(self):
+        return [self._wrap(r) for r in self._cursor.fetchall()]
+
+
+class _LibsqlConnection:
+    """Minimal sqlite3-shaped wrapper over a libsql connection."""
+
+    def __init__(self, conn):
+        self._conn = conn
+
+    def execute(self, sql, params=()):
+        return _RowCursor(self._conn.execute(sql, params))
+
+    def executescript(self, script):
+        return self._conn.executescript(script)
+
+    def commit(self):
+        self._conn.commit()
+
+    def close(self):
+        self._conn.close()
+
+
+def _open_connection(path, turso_url="", turso_token=""):
+    """Return (connection, backend_name).
+
+    Turso is used only when BOTH the URL and token are set; any other
+    combination falls back to the local SQLite file at `path`.
+    """
+    if turso_url and turso_token:
+        try:
+            import libsql
+        except ImportError as exc:
+            raise RuntimeError(
+                "TURSO_DATABASE_URL/TURSO_AUTH_TOKEN are set but the "
+                "'libsql' package is not installed - run: pip install -r "
+                "requirements.txt") from exc
+        return _LibsqlConnection(libsql.connect(turso_url, auth_token=turso_token)), "turso"
+    conn = sqlite3.connect(path, check_same_thread=False)
+    conn.row_factory = sqlite3.Row
+    return conn, "sqlite"
 
 
 class DB:
-    def __init__(self, path="vishal_ai.db"):
-        self.conn = sqlite3.connect(path, check_same_thread=False)
-        self.conn.row_factory = sqlite3.Row
+    def __init__(self, path="vishal_ai.db", turso_url="", turso_token=""):
+        self.conn, self.backend = _open_connection(path, turso_url, turso_token)
         with _lock:
             self.conn.executescript(SCHEMA)
             self.conn.commit()
@@ -300,97 +354,6 @@ class DB:
                 (user_id, date.today().isoformat()))
             self.conn.commit()
         return self.usage_today(user_id)
-
-    # ---- documents & chunks (Pro v3 RAG) ----
-    def add_document(self, business_code, name, chunk_count=0):
-        with _lock:
-            cur = self.conn.execute(
-                "INSERT INTO documents (business_code, name, chunk_count)"
-                " VALUES (?,?,?)", (business_code, name, chunk_count))
-            self.conn.commit()
-            return cur.lastrowid
-
-    def list_documents(self, business_code):
-        rows = self.conn.execute(
-            "SELECT * FROM documents WHERE business_code=? ORDER BY id",
-            (business_code,)).fetchall()
-        return [dict(r) for r in rows]
-
-    def count_documents(self, business_code):
-        return self.conn.execute(
-            "SELECT COUNT(*) c FROM documents WHERE business_code=?",
-            (business_code,)).fetchone()["c"]
-
-    def get_document(self, business_code, doc_id):
-        row = self.conn.execute(
-            "SELECT * FROM documents WHERE id=? AND business_code=?",
-            (doc_id, business_code)).fetchone()
-        return dict(row) if row else None
-
-    def delete_document(self, business_code, doc_id):
-        """Delete a document AND all its chunks. Scoped to the owning
-        business - another business's doc_id deletes nothing.
-        Returns True if a document row was removed."""
-        with _lock:
-            cur = self.conn.execute(
-                "DELETE FROM documents WHERE id=? AND business_code=?",
-                (doc_id, business_code))
-            removed = cur.rowcount > 0
-            if removed:
-                self.conn.execute(
-                    "DELETE FROM doc_chunks WHERE doc_id=? AND business_code=?",
-                    (doc_id, business_code))
-            self.conn.commit()
-            return removed
-
-    def doc_limit_for_plan(self, plan):
-        return DOC_LIMITS.get((plan or "free").lower(), DOC_LIMITS["free"])
-
-    def can_add_document(self, business_code, plan):
-        return self.count_documents(business_code) < self.doc_limit_for_plan(plan)
-
-    def store_chunks(self, doc_id, business_code, chunks, vectors=None):
-        """chunks: list[str]; vectors: optional parallel list of
-        embedding lists (None entries allowed - keyword-searchable)."""
-        import json as _json
-        doc = self.conn.execute(
-            "SELECT name FROM documents WHERE id=?", (doc_id,)).fetchone()
-        doc_name = doc["name"] if doc else ""
-        with _lock:
-            for i, text in enumerate(chunks):
-                vec = vectors[i] if vectors and i < len(vectors) else None
-                self.conn.execute(
-                    "INSERT INTO doc_chunks (doc_id, business_code, doc_name,"
-                    " chunk_index, text, embedding) VALUES (?,?,?,?,?,?)",
-                    (doc_id, business_code, doc_name, i, text,
-                     _json.dumps(vec) if vec is not None else None))
-            self.conn.execute(
-                "UPDATE documents SET chunk_count=? WHERE id=?",
-                (len(chunks), doc_id))
-            self.conn.commit()
-
-    def list_chunks(self, business_code, doc_id=None):
-        import json as _json
-        if doc_id is not None:
-            rows = self.conn.execute(
-                "SELECT * FROM doc_chunks WHERE business_code=? AND doc_id=?"
-                " ORDER BY chunk_index", (business_code, doc_id)).fetchall()
-        else:
-            rows = self.conn.execute(
-                "SELECT * FROM doc_chunks WHERE business_code=?"
-                " ORDER BY doc_id, chunk_index", (business_code,)).fetchall()
-        out = []
-        for r in rows:
-            d = dict(r)
-            raw = d.get("embedding")
-            d["embedding"] = _json.loads(raw) if raw else None
-            out.append(d)
-        return out
-
-    def count_chunks(self, business_code):
-        return self.conn.execute(
-            "SELECT COUNT(*) c FROM doc_chunks WHERE business_code=?",
-            (business_code,)).fetchone()["c"]
 
     def total_ai_calls_today(self):
         row = self.conn.execute(

@@ -68,6 +68,15 @@ class Config:
     MAKE_WEBHOOK_URL = os.environ.get("MAKE_WEBHOOK_URL", "")
 
     DB_PATH = os.environ.get("DB_PATH", "vishal_ai.db")
+
+    # --- Optional: Turso permanent database ---
+    # When BOTH are set, the bot stores its data in Turso (libsql)
+    # instead of the local SQLite file, so data survives redeploys on
+    # hosts with an ephemeral filesystem (Render free). Set these in the
+    # hosting dashboard ONLY - never in chat, code, or a committed .env.
+    # If either is empty, the local file (DB_PATH) is used as before.
+    TURSO_DATABASE_URL = os.environ.get("TURSO_DATABASE_URL", "")
+    TURSO_AUTH_TOKEN = os.environ.get("TURSO_AUTH_TOKEN", "")
     PORT = int(os.environ.get("PORT", "8080"))  # health endpoint for free hosts
 
 

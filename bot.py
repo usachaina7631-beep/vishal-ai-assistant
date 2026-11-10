@@ -69,7 +69,9 @@ log = logging.getLogger("vishal-bot")
 
 API = f"https://api.telegram.org/bot{Config.BOT_TOKEN}"
 FILE_API = f"https://api.telegram.org/file/bot{Config.BOT_TOKEN}"
-db = DB(Config.DB_PATH)
+db = DB(Config.DB_PATH,
+        turso_url=Config.TURSO_DATABASE_URL,
+        turso_token=Config.TURSO_AUTH_TOKEN)
 ai = AIClient()
 
 PLAN_LIMITS = {"free": Config.FREE_DAILY_LIMIT, "lite": 300,
