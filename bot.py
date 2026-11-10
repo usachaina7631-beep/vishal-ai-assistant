@@ -19,6 +19,9 @@ Pro features
   marks the class running now and the next one, and a GK Quiz (/quiz):
   10 text-based questions per session from a built-in original
   question bank, with live score and a result at the end.
+* Group Quiz (/groupquiz): the same question bank as native Telegram
+  quiz polls in a group - tap-to-answer, 30 seconds per question,
+  automatic next question and a winners list at the end.
 * Guided forms for Lead Generation and Appointment Requests with Indian
   phone/date/time validation.
 * Telegram-native Admin Dashboard (/admin): live stats, leads &
@@ -87,6 +90,15 @@ awaiting_photo = set()
 # GK Quiz sessions: user_id -> {"order": [question index, ...],
 # "pos": current question position, "score": sahi jawabon ki sankhya}
 quiz_sessions = {}
+# Group Quiz sessions: chat_id -> session dict (see the Group Quiz
+# section below - sawal, scores, timer generation, sab in-memory;
+# bot restart par chalta quiz khatm ho jata hai, ye jaan-boojh kar hai)
+group_sessions = {}
+# poll_id -> chat_id: poll_answer updates ko sahi session tak le jaane
+# ke liye (Telegram poll_answer me chat_id nahi aata, sirf poll_id)
+group_poll_chats = {}
+group_sessions_lock = threading.Lock()
+_group_quiz_gen = 0  # har start/stop par badhta hai; purane timers invalid
 
 
 # ----------------------------------------------------------------------
@@ -185,6 +197,7 @@ HELP = (
     "• /book <book ka naam> — book search (sirf legal preview/info links milenge)\n"
     "• /schedule — roz ki class time-table (abhi chal rahi class aur agli class ke saath)\n"
     "• /quiz — GK Quiz: 10 sawal (Bihar GK, Polity, History, Geography, Science), jawab A/B/C/D ya 1-4 me dein  • /stopquiz — quiz band\n"
+    "• /groupquiz - Group me tap-wala quiz (30 sec/sawal)  • /stopgroupquiz — group quiz band\n"
     "• /lead — enquiry form  • /book — appointment form\n"
     "• /setbusiness — business owners: apna business jodein aur apna "
     "customer link payein\n"
@@ -493,10 +506,10 @@ def schedule_text(now=None):
 
 # ----------------------------------------------------------------------
 # GK Quiz (/quiz) - text flow: bot sawal ke 4 options (A-D) bhejta hai,
-# user letter ya number me jawab deta hai. Telegram quiz-polls is code
-# me fit nahi hote: poll ke jawab 'poll_answer' naam ke alag update
-# type me aate hain, jise ye polling loop handle hi nahi karta - isliye
-# bot ke baaki guided flows wala text pattern hi sahi baithta hai.
+# user letter ya number me jawab deta hai. Ye 1-to-1 practice ke liye
+# text pattern hi sahi baithta hai; group me tap-wala asli quiz-poll
+# anubhav alag /groupquiz feature deta hai (neeche Group Quiz section -
+# uske 'poll_answer' updates ko polling loop ab handle karta hai).
 # Admin: sawal jodne/badlane ke liye sirf QUIZ_QUESTIONS list edit
 # karein. Har entry: "q" (sawal), "options" (thik 4), "answer" (sahi
 # option ka index, 0 = A) aur "why" (ek line ki vyakhya). Saare sawal
@@ -713,6 +726,222 @@ def handle_quiz_answer(user_id, chat_id, text):
     else:
         send(chat_id, quiz_question_text(session), parse_mode="Markdown")
     return True
+
+
+# ----------------------------------------------------------------------
+# Group Quiz (/groupquiz) - QUIJ-group style: bot group me ek-ek karke
+# asli Telegram quiz-poll bhejta hai; har poll 30 second me apne aap
+# band hota hai, agla sawal timer se apne aap aata hai, aur aakhir me
+# score + samay ke saath winners ki list banti hai. Sawal wahi
+# QUIZ_QUESTIONS bank se aate hain - kuch bhi haath se bharna nahi.
+# Jawab 'poll_answer' updates se aate hain (handle_poll_answer).
+# Sessions sirf memory me hain: bot restart = chalta quiz khatm.
+# ----------------------------------------------------------------------
+GROUP_QUIZ_SECONDS = 30        # har sawal ka open_period (seconds)
+GROUP_QUIZ_DELAY = 33          # timer: open_period + 3s buffer
+GROUP_QUIZ_DEFAULT = 10
+GROUP_QUIZ_MIN = 3
+GROUP_QUIZ_MAX = 35
+
+
+def group_poll_payload(chat_id, q, pos, total):
+    """sendPoll ke kwargs: ek sawal = ek quiz poll (pure function)."""
+    return {
+        "chat_id": chat_id,
+        "question": f"Sawal {pos + 1}/{total}: {q['q']}",
+        "options": list(q["options"]),
+        "type": "quiz",
+        "correct_option_id": q["answer"],
+        "is_anonymous": False,
+        "open_period": GROUP_QUIZ_SECONDS,
+        "explanation": q["why"][:200],  # Telegram explanation cap ke andar
+    }
+
+
+def group_record_answer(session, user_id, name, option_ids, now=None):
+    """Ek poll jawab ko session ke score me jodein (koi I/O nahi).
+
+    Per user, per poll sirf PEHLA jawab ginti hota hai. Sahi jawab par
+    correct +1 aur jawab dene me laga samay (seconds) judta hai; galat
+    jawab na score deta hai na samay. Jawab record hua to True.
+    """
+    key = (session.get("poll_id"), user_id)
+    if key in session["answered"]:
+        return False
+    session["answered"].add(key)
+    entry = session["scores"].setdefault(
+        user_id, {"name": name or "Player", "correct": 0, "time": 0.0})
+    if name:
+        entry["name"] = name
+    if option_ids and option_ids[0] == session.get("correct"):
+        answered_at = time.time() if now is None else now
+        entry["correct"] += 1
+        entry["time"] += max(0.0, answered_at
+                             - session.get("posted_at", answered_at))
+    return True
+
+
+def group_leaderboard_text(scores, total):
+    """Quiz ke ant ka winners message (pure function).
+
+    Sort: zyada sahi jawab pehle; barabari ho to kul samay kam pehle.
+    """
+    if not scores:
+        return ("🏁 Quiz khatm! Is baar kisi ne koi jawab nahi diya — "
+                "kal phir try karte hain.")
+    ranked = sorted(scores.values(),
+                    key=lambda e: (-e["correct"], e["time"]))
+    medals = ["🥇", "🥈", "🥉"]
+    lines = ["🏁 *Quiz khatm!* 🏆 Winners:"]
+    for i, entry in enumerate(ranked[:10]):
+        rank = medals[i] if i < 3 else f"{i + 1}."
+        lines.append(f"{rank} {entry['name']} – {entry['correct']}/{total} "
+                     f"sahi ({entry['time']:.0f} sec)")
+    return "\n".join(lines)
+
+
+def _drop_group_session(chat_id):
+    """Session + uske saare poll_id mappings hatayein.
+
+    Sirf group_sessions_lock pakde hue bulayein.
+    """
+    group_sessions.pop(chat_id, None)
+    stale = [pid for pid, cid in group_poll_chats.items() if cid == chat_id]
+    for pid in stale:
+        group_poll_chats.pop(pid, None)
+
+
+def _post_group_question(chat_id, generation):
+    """Session ka current sawal quiz-poll bana kar bhejein + timer lagayein."""
+    with group_sessions_lock:
+        session = group_sessions.get(chat_id)
+        if (not session or not session.get("active")
+                or session["generation"] != generation):
+            return
+        q = session["questions"][session["index"]]
+        payload = group_poll_payload(chat_id, q, session["index"],
+                                     len(session["questions"]))
+    result = tg("sendPoll", **payload)
+    poll = (result.get("result") or {}).get("poll") or {}
+    with group_sessions_lock:
+        session = group_sessions.get(chat_id)
+        if (not session or not session.get("active")
+                or session["generation"] != generation):
+            return  # beech me quiz ruk/badla gaya - ye poll bekaar
+        session["poll_id"] = poll.get("id")
+        session["correct"] = q["answer"]
+        session["posted_at"] = time.time()
+        if session["poll_id"]:
+            group_poll_chats[session["poll_id"]] = chat_id
+    threading.Thread(target=_group_quiz_timer,
+                     args=(chat_id, generation), daemon=True).start()
+
+
+def _group_quiz_timer(chat_id, generation):
+    """Sawal ke 33s baad: agla sawal bhejo, ya aakhri par winners.
+
+    Generation mismatch = quiz ruk gaya ya naya shuru ho gaya; purana
+    timer chup-chaap mar jata hai.
+    """
+    time.sleep(GROUP_QUIZ_DELAY)
+    results_text = None
+    with group_sessions_lock:
+        session = group_sessions.get(chat_id)
+        if (not session or not session.get("active")
+                or session["generation"] != generation):
+            return
+        session["index"] += 1
+        if session["index"] >= len(session["questions"]):
+            results_text = group_leaderboard_text(
+                session["scores"], len(session["questions"]))
+            _drop_group_session(chat_id)
+    if results_text is not None:
+        send(chat_id, results_text, parse_mode="Markdown")
+    else:
+        _post_group_question(chat_id, generation)
+
+
+def start_group_quiz(chat_id, starter_id, count=None):
+    """/groupquiz: is chat me tap-wala group quiz shuru karein."""
+    global _group_quiz_gen
+    total = count if count else GROUP_QUIZ_DEFAULT
+    total = max(GROUP_QUIZ_MIN,
+                min(GROUP_QUIZ_MAX, total, len(QUIZ_QUESTIONS)))
+    with group_sessions_lock:
+        current = group_sessions.get(chat_id)
+        if current and current.get("active"):
+            busy = True
+            generation = None
+        else:
+            busy = False
+            _group_quiz_gen += 1
+            generation = _group_quiz_gen
+            group_sessions[chat_id] = {
+                "questions": random.sample(QUIZ_QUESTIONS, total),
+                "index": 0,
+                "poll_id": None,
+                "correct": None,
+                "posted_at": 0.0,
+                "scores": {},
+                "answered": set(),
+                "starter_id": starter_id,
+                "generation": generation,
+                "active": True,
+            }
+    if busy:
+        return send(chat_id, "⏳ Is chat me pehle se ek quiz chal raha "
+                             "hai. Use khatm hone do ya /stopgroupquiz bhejo.")
+    send(chat_id,
+         "🏆 *GK Group Quiz shuru!*\n"
+         f"{total} sawal — har sawal ke liye sirf *30 second*. "
+         "Option par tap karke jawab do.\n"
+         "Sabse zyada sahi + sabse tez = winner! 🥇",
+         parse_mode="Markdown")
+    _post_group_question(chat_id, generation)
+
+
+def stop_group_quiz(chat_id, user_id):
+    """/stopgroupquiz: chalta quiz rokein - sirf starter ya admin."""
+    global _group_quiz_gen
+    with group_sessions_lock:
+        session = group_sessions.get(chat_id)
+        if not session or not session.get("active"):
+            state = "none"
+        elif user_id != session["starter_id"] and not is_admin(user_id):
+            state = "denied"
+        else:
+            state = "stopped"
+            _group_quiz_gen += 1  # pending timer invalid
+            _drop_group_session(chat_id)
+    if state == "none":
+        return send(chat_id, "Abhi is chat me koi group quiz nahi chal "
+                             "raha. Shuru karne ke liye /groupquiz dabayein.")
+    if state == "denied":
+        return send(chat_id, "⛔ Quiz sirf wahi rok sakta hai jisne use "
+                             "shuru kiya tha, ya koi admin.")
+    return send(chat_id, "⏹ Quiz rok diya gaya.")
+
+
+def handle_poll_answer(pa):
+    """Telegram 'poll_answer' update: group quiz ka tap-jawab score karein.
+
+    Anjaan ya purane (expired) poll ke jawab chup-chaap ignore hote hain.
+    """
+    poll_id = pa.get("poll_id")
+    user = pa.get("user") or {}
+    user_id = user.get("id")
+    if not poll_id or user_id is None:
+        return
+    with group_sessions_lock:
+        chat_id = group_poll_chats.get(poll_id)
+        if chat_id is None:
+            return
+        session = group_sessions.get(chat_id)
+        if (not session or not session.get("active")
+                or session.get("poll_id") != poll_id):
+            return
+        group_record_answer(session, user_id, user.get("first_name", ""),
+                            pa.get("option_ids") or [])
 
 
 # ----------------------------------------------------------------------
@@ -1064,6 +1293,17 @@ def handle_message(msg):
     if text == "/stopquiz":
         return send(chat_id, "Abhi koi quiz nahi chal raha. Shuru karne "
                              "ke liye /quiz dabayein.")
+    if text == "/groupquiz" or text.startswith("/groupquiz "):
+        count = GROUP_QUIZ_DEFAULT
+        parts = text.split()
+        if len(parts) > 1:
+            try:
+                count = int(parts[1])
+            except ValueError:
+                count = GROUP_QUIZ_DEFAULT
+        return start_group_quiz(chat_id, user_id, count)
+    if text == "/stopgroupquiz":
+        return stop_group_quiz(chat_id, user_id)
     if text == "📖 Book Search":
         return send(chat_id, "📖 Book dhundhne ke liye is format me likhein:\n"
                              "/book <book ka naam>\nJaise: /book Ramayan\n"
@@ -1236,7 +1476,10 @@ def main():
     while True:
         try:
             r = requests.get(f"{API}/getUpdates",
-                             params={"offset": offset, "timeout": 50},
+                             params={"offset": offset, "timeout": 50,
+                                     "allowed_updates": json.dumps(
+                                         ["message", "callback_query",
+                                          "poll_answer"])},
                              timeout=60)
             data = r.json()
             if not data.get("ok"):
@@ -1249,6 +1492,8 @@ def main():
                         cb = update["callback_query"]
                         if not handle_lang_callback(cb):
                             handle_callback(cb)
+                    elif "poll_answer" in update:
+                        handle_poll_answer(update["poll_answer"])
                     elif "message" in update:
                         handle_message(update["message"])
                 except Exception:
