@@ -1,5 +1,5 @@
 """
-Pro v2 web-layer tests — run with: python -m unittest discover tests -v
+Pro v3 web-layer tests — run with: python -m unittest discover tests -v
 No live token/API key needed; AI call is mocked at web_chat's ai object.
 """
 import json
@@ -48,7 +48,10 @@ class TestWebLayer(unittest.TestCase):
     def test_health_json(self):
         status, body = self._get("/health")
         self.assertEqual(status, 200)
-        self.assertIn("Pro v2", body)
+        data = json.loads(body)
+        self.assertEqual(data["status"], "ok")
+        # The live lineage's health shape - Render/UptimeRobot depend on it
+        self.assertEqual(data["service"], "Vishal AI Assistant")
 
     def test_index_is_website_not_json(self):
         status, body = self._get("/")
