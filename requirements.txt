@@ -1,5 +1,9 @@
 requests>=2.31
 Pillow>=10.0
+# PDF text extraction for /adddoc (Pro v3 RAG). Optional at runtime:
+# without it, PDF uploads get a clear "paste the text instead" reply
+# and TXT documents keep working.
+pypdf>=4.0
 # Turso permanent database driver (only used when TURSO_DATABASE_URL
 # and TURSO_AUTH_TOKEN are set; otherwise the bot uses local SQLite)
 libsql>=0.1.11

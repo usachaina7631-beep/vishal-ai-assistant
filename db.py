@@ -91,7 +91,28 @@ CREATE TABLE IF NOT EXISTS usage (
     ai_calls    INTEGER DEFAULT 0,
     PRIMARY KEY (user_id, day)
 );
+CREATE TABLE IF NOT EXISTS documents (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    business_code TEXT NOT NULL,
+    name        TEXT NOT NULL,
+    chunk_count INTEGER DEFAULT 0,
+    created_at  TEXT DEFAULT CURRENT_TIMESTAMP
+);
+CREATE TABLE IF NOT EXISTS doc_chunks (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    doc_id      INTEGER NOT NULL REFERENCES documents(id),
+    business_code TEXT NOT NULL,
+    doc_name    TEXT NOT NULL,
+    chunk_index INTEGER NOT NULL,
+    text        TEXT NOT NULL,
+    embedding   TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_chunks_business ON doc_chunks(business_code);
+CREATE INDEX IF NOT EXISTS idx_chunks_doc ON doc_chunks(doc_id);
 """
+
+# Plan-wise document limits for /adddoc (Pro v3 RAG).
+DOC_LIMITS = {"free": 1, "lite": 3, "standard": 10, "premium": 25}
 
 
 class _RowCursor:
@@ -360,3 +381,104 @@ class DB:
             "SELECT COALESCE(SUM(ai_calls),0) s FROM usage WHERE day=?",
             (date.today().isoformat(),)).fetchone()
         return row["s"]
+
+    # ---- documents & chunks (Pro v3 RAG) ----
+    # All queries go through self.conn (the SQLite/Turso adapter), in the
+    # same ?-param + dict-row style as the rest of this file, so they
+    # behave identically on the local file and on Turso/libsql.
+    def add_document(self, business_code, name, chunk_count=0):
+        with _lock:
+            cur = self.conn.execute(
+                "INSERT INTO documents (business_code, name, chunk_count)"
+                " VALUES (?,?,?)", (business_code, name, chunk_count))
+            self.conn.commit()
+            return cur.lastrowid
+
+    def list_documents(self, business_code):
+        rows = self.conn.execute(
+            "SELECT * FROM documents WHERE business_code=? ORDER BY id",
+            (business_code,)).fetchall()
+        return [dict(r) for r in rows]
+
+    def count_documents(self, business_code):
+        return self.conn.execute(
+            "SELECT COUNT(*) c FROM documents WHERE business_code=?",
+            (business_code,)).fetchone()["c"]
+
+    def get_document(self, business_code, doc_id):
+        row = self.conn.execute(
+            "SELECT * FROM documents WHERE id=? AND business_code=?",
+            (doc_id, business_code)).fetchone()
+        return dict(row) if row else None
+
+    def delete_document(self, business_code, doc_id):
+        """Delete a document AND all its chunks. Scoped to the owning
+        business - another business's doc_id deletes nothing.
+        Returns True if a document row was removed.
+
+        Adapted for the Turso adapter: existence is checked with a
+        SELECT first instead of cursor.rowcount, which the libsql
+        row-cursor wrapper does not expose."""
+        with _lock:
+            doc = self.conn.execute(
+                "SELECT id FROM documents WHERE id=? AND business_code=?",
+                (doc_id, business_code)).fetchone()
+            if not doc:
+                return False
+            self.conn.execute(
+                "DELETE FROM documents WHERE id=? AND business_code=?",
+                (doc_id, business_code))
+            self.conn.execute(
+                "DELETE FROM doc_chunks WHERE doc_id=? AND business_code=?",
+                (doc_id, business_code))
+            self.conn.commit()
+            return True
+
+    def doc_limit_for_plan(self, plan):
+        return DOC_LIMITS.get((plan or "free").lower(), DOC_LIMITS["free"])
+
+    def can_add_document(self, business_code, plan):
+        return self.count_documents(business_code) < self.doc_limit_for_plan(plan)
+
+    def store_chunks(self, doc_id, business_code, chunks, vectors=None):
+        """chunks: list[str]; vectors: optional parallel list of
+        embedding lists (None entries allowed - keyword-searchable)."""
+        import json as _json
+        doc = self.conn.execute(
+            "SELECT name FROM documents WHERE id=?", (doc_id,)).fetchone()
+        doc_name = doc["name"] if doc else ""
+        with _lock:
+            for i, text in enumerate(chunks):
+                vec = vectors[i] if vectors and i < len(vectors) else None
+                self.conn.execute(
+                    "INSERT INTO doc_chunks (doc_id, business_code, doc_name,"
+                    " chunk_index, text, embedding) VALUES (?,?,?,?,?,?)",
+                    (doc_id, business_code, doc_name, i, text,
+                     _json.dumps(vec) if vec is not None else None))
+            self.conn.execute(
+                "UPDATE documents SET chunk_count=? WHERE id=?",
+                (len(chunks), doc_id))
+            self.conn.commit()
+
+    def list_chunks(self, business_code, doc_id=None):
+        import json as _json
+        if doc_id is not None:
+            rows = self.conn.execute(
+                "SELECT * FROM doc_chunks WHERE business_code=? AND doc_id=?"
+                " ORDER BY chunk_index", (business_code, doc_id)).fetchall()
+        else:
+            rows = self.conn.execute(
+                "SELECT * FROM doc_chunks WHERE business_code=?"
+                " ORDER BY doc_id, chunk_index", (business_code,)).fetchall()
+        out = []
+        for r in rows:
+            d = dict(r)
+            raw = d.get("embedding")
+            d["embedding"] = _json.loads(raw) if raw else None
+            out.append(d)
+        return out
+
+    def count_chunks(self, business_code):
+        return self.conn.execute(
+            "SELECT COUNT(*) c FROM doc_chunks WHERE business_code=?",
+            (business_code,)).fetchone()["c"]

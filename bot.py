@@ -22,6 +22,13 @@ Pro features
 * Group Quiz (/groupquiz): the same question bank as native Telegram
   quiz polls in a group - tap-to-answer, 30 seconds per question,
   automatic next question and a winners list at the end.
+* Business documents (Pro v3 RAG, restored): owners attach fees /
+  jaankari documents with /adddoc (PDF, TXT or pasted text); Support
+  answers then also use the business's own document excerpts, always
+  cited, always treated as data - never as instructions.
+* Website (Pro v2, restored): the same backend serves a web chat UI
+  at / and POST /api/chat (30 free chats/day per visitor) alongside
+  the /health endpoint used by the host and the uptime monitor.
 * Guided forms for Lead Generation and Appointment Requests with Indian
   phone/date/time validation.
 * Telegram-native Admin Dashboard (/admin): live stats, leads &
@@ -38,16 +45,18 @@ import csv
 import io
 import json
 import logging
+import os
 import random
 import threading
 import time
 from datetime import datetime, time as dt_time
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import quote_plus
 from zoneinfo import ZoneInfo
 
 import requests
 
+import rag
 from ai_client import AIClient
 from config import Config, validate
 from db import DB
@@ -204,6 +213,8 @@ HELP = (
     "• /setbusiness — business owners: apna business jodein aur apna "
     "customer link payein\n"
     "• /mybusiness — apna business, FAQs aur stats dekhein\n"
+    "• /adddoc — owners: fees/jaankari wali PDF, TXT ya lamba text jodein — Support mode usi se jawab dega\n"
+    "• /mydocs — jode hue documents  • /removedoc <id> — document hatayein\n"
     "• /language — Hindi/English chunein\n"
     "• /mydata — apna saved data dekhein  • /deletedata — data delete karein\n"
     "• /admin — owner dashboard (sirf admin ke liye)"
@@ -235,8 +246,22 @@ def ask_ai(user_id, mode, user_text, engine=None):
                 "ya owner se apna customer link mangein. / First open a business "
                 "link so I know which business to support.")
     faq_text = db.faq_context(business["code"]) if business else ""
+    # Pro v3 RAG: FAQ stays primary; document retrieval only ADDS the
+    # top chunks of THIS business that clear the similarity threshold.
+    # No hits -> rag_text stays empty -> behaviour is exactly as before.
+    rag_text, rag_sources = "", []
+    if business:
+        try:
+            hits = rag.retrieve(db, business["code"], user_text)
+        except Exception as exc:  # retrieval must never break support
+            log.warning("RAG retrieve failed: %s", type(exc).__name__)
+            hits = []
+        if hits:
+            rag_text = rag.format_context(hits)
+            rag_sources = rag.source_names(hits)
     messages = [{"role": "system",
-                 "content": build_system_prompt(mode, business, faq_text)}]
+                 "content": build_system_prompt(mode, business, faq_text,
+                                                rag_text)}]
     messages += db.get_memory(user_id, mode, Config.MEMORY_TURNS)
     messages.append({"role": "user", "content": user_text})
     if engine == "deepseek":
@@ -244,6 +269,10 @@ def ask_ai(user_id, mode, user_text, engine=None):
         text, _provider = ai.chat_deepseek(messages)
     else:
         text, _provider = ai.chat(messages, quality=mode in QUALITY_MODES)
+    if _provider and rag_sources and "(Source:" not in text:
+        # Guarantee the citation even if the model forgot it.
+        for src in rag_sources:
+            text += chr(10) + f"(Source: {src})"
     if _provider:  # only count successful AI calls
         db.bump_usage(user_id)
         db.add_memory(user_id, mode, "user", user_text[:500])
@@ -267,6 +296,126 @@ def push_make_webhook(event):
         except Exception as exc:
             log.warning("Make webhook failed: %s", type(exc).__name__)
     threading.Thread(target=_post, daemon=True).start()
+
+
+# ----------------------------------------------------------------------
+# Pro v3 RAG: owner document ingestion (/adddoc, /mydocs, /removedoc)
+# ----------------------------------------------------------------------
+def _owner_business_or_error(user_id, chat_id):
+    biz = db.get_business_by_owner(user_id)
+    if not biz:
+        send(chat_id, "⚠️ Pehle /setbusiness karein — document aapke "
+                      "business ke naam par hi judega.")
+    return biz
+
+
+def _doc_limit_error(user_id, chat_id, biz):
+    """Return True (and message the owner) if the plan doc limit hit."""
+    owner = db.get_user(user_id) or {}
+    plan = owner.get("plan", "free")
+    if db.can_add_document(biz["code"], plan):
+        return False
+    limit = db.doc_limit_for_plan(plan)
+    send(chat_id,
+         f"⚠️ Aapke '{plan}' plan me {limit} document ki seema poori ho "
+         f"gayi hai. Pehle /mydocs se koi purana document hatayein "
+         f"(/removedoc <id>), ya plan upgrade karwayein.")
+    return True
+
+
+def _ingest_and_report(user_id, chat_id, biz, doc_name, text):
+    try:
+        doc_id, n_chunks = rag.ingest_document(db, biz["code"], doc_name, text)
+    except rag.DocumentError as exc:
+        return send(chat_id, str(exc))
+    states.pop(user_id, None)
+    return send(chat_id,
+                f"✅ Document jud gaya!\n📄 {doc_name} (#{doc_id})\n"
+                f"🧩 Kul {n_chunks} hisse bane.\n"
+                "Ab Support mode is jaankari se bhi jawab dega. "
+                "Documents dekhne ke liye /mydocs dabayein.")
+
+
+def process_adddoc_text(user_id, chat_id, text):
+    biz = db.get_business_by_owner(user_id)
+    if not biz:
+        states.pop(user_id, None)
+        return send(chat_id, "⚠️ Pehle /setbusiness karein.")
+    if len(text) > Config.DOC_TEXT_MIN_CHARS:
+        return send(chat_id,
+                    f"⚠️ Text bahut lamba hai (max {Config.DOC_TEXT_MIN_CHARS} "
+                    "characters). Use do hisso me bhej dein.")
+    if len(text.strip()) < 50:
+        return send(chat_id,
+                    "⚠️ Ye jaankari bahut chhoti hai. Thodi vistrit jaankari "
+                    "(fees, courses, niyam) ek saath bhej dein, ya PDF bhej dein:")
+    if _doc_limit_error(user_id, chat_id, biz):
+        states.pop(user_id, None)
+        return
+    n = db.count_documents(biz["code"]) + 1
+    return _ingest_and_report(user_id, chat_id, biz,
+                              f"pasted-jaankari-{n}.txt", text)
+
+
+def download_telegram_file(file_id):
+    info = tg("getFile", file_id=file_id)
+    path = (info.get("result") or {}).get("file_path")
+    if not path:
+        return None
+    r = requests.get(f"{FILE_API}/{path}", timeout=60)
+    r.raise_for_status()
+    return r.content
+
+
+def handle_document(msg, document):
+    chat_id = msg["chat"]["id"]
+    user_id = msg["from"]["id"]
+    db.upsert_user(user_id, msg["from"].get("username", ""),
+                   msg["from"].get("first_name", ""))
+    if states.get(user_id, {}).get("flow") != "adddoc":
+        return send(chat_id,
+                    "📄 Document mil gaya. Use Support me jodne ke liye "
+                    "pehle /adddoc dabayein, fir file bhejein.")
+    biz = db.get_business_by_owner(user_id)
+    if not biz:
+        states.pop(user_id, None)
+        return send(chat_id, "⚠️ Pehle /setbusiness karein.")
+    size = document.get("file_size") or 0
+    if size > Config.DOC_MAX_BYTES:
+        return send(chat_id, "❌ File bahut badi hai (max 5 MB). "
+                             "Chhoti file bhejein, ya jaankari text me bhej dein:")
+    if _doc_limit_error(user_id, chat_id, biz):
+        states.pop(user_id, None)
+        return
+    filename = document.get("file_name") or "document"
+    send(chat_id, "⏳ Document mil gaya, padh raha hoon…")
+    try:
+        raw = download_telegram_file(document["file_id"])
+    except Exception as exc:
+        log.warning("Document download failed: %s", type(exc).__name__)
+        raw = None
+    if not raw:
+        return send(chat_id, "❌ File download nahi ho payi. Dobara bhejein, "
+                             "ya jaankari text me bhej dein:")
+    try:
+        text, _pages = rag.extract_text(filename, raw)
+    except rag.DocumentError as exc:
+        return send(chat_id, str(exc))
+    return _ingest_and_report(user_id, chat_id, biz, filename, text)
+
+
+def mydocs_text(biz):
+    docs = db.list_documents(biz["code"])
+    if not docs:
+        return ("📄 Abhi koi document nahi juda hai.\n"
+                "/adddoc dabakar fees list / jaankari wali PDF, TXT ya "
+                "lamba text jodein — Support mode usi se jawab dega.")
+    lines = [f"📄 *{biz['name']} — Documents*\n"]
+    for d in docs:
+        lines.append(f"#{d['id']} {d['name']} — {d['chunk_count']} hisse — "
+                     f"{(d['created_at'] or '')[:10]}")
+    lines.append("\nHatane ke liye: /removedoc <id>")
+    return chr(10).join(lines)
 
 
 # ----------------------------------------------------------------------
@@ -1214,6 +1363,12 @@ def handle_message(msg):
         awaiting_photo.discard(user_id)
         return send(chat_id, "⚠️ Ye file image nahi hai. Kripya photo "
                              "(JPG/PNG) bhejein — /enhance se phir try karein.")
+    # Pro v3 RAG: non-image documents (PDF/TXT) go to the document
+    # handler - it ingests them when /adddoc is active and otherwise
+    # replies with the /adddoc hint. (Image documents were already
+    # routed to Photo Enhance above.)
+    if msg.get("document"):
+        return handle_document(msg, msg["document"])
     text = (msg.get("text") or "").strip()
     if not text:
         return
@@ -1229,6 +1384,8 @@ def handle_message(msg):
         if flow_name == "broadcast":
             states.pop(user_id, None)
             return do_broadcast(chat_id, text)
+        if flow_name == "adddoc":
+            return process_adddoc_text(user_id, chat_id, text)
         return handle_flow_text(user_id, chat_id, text)
 
     # GK Quiz chal raha ho to /stopquiz (ya /cancel) yahin ruk jaye
@@ -1326,6 +1483,40 @@ def handle_message(msg):
             return send(chat_id, "⚠️ Pehle /setbusiness karein.")
         start_flow(user_id, "addfaq")
         return send(chat_id, FLOWS["addfaq"]["prompts"][0])
+    if text == "/adddoc":
+        biz = _owner_business_or_error(user_id, chat_id)
+        if not biz:
+            return
+        if _doc_limit_error(user_id, chat_id, biz):
+            return
+        states[user_id] = {"flow": "adddoc", "step": 0, "data": {}}
+        return send(chat_id,
+                    "📄 Document jodne ke liye taiyaar hoon.\n\n"
+                    "Koi ek cheez bhejein:\n"
+                    "1️⃣ PDF ya TXT file (max 5 MB) — jaise fees list\n"
+                    "2️⃣ Ya lambi jaankari seedha text me chipka dein\n\n"
+                    "Rokna ho to /cancel likhein.")
+    if text == "/mydocs":
+        biz = _owner_business_or_error(user_id, chat_id)
+        if not biz:
+            return
+        return send(chat_id, mydocs_text(biz), parse_mode="Markdown")
+    if text.startswith("/removedoc"):
+        biz = _owner_business_or_error(user_id, chat_id)
+        if not biz:
+            return
+        parts = text.split()
+        doc = None
+        if len(parts) == 2 and parts[1].isdigit():
+            doc = db.get_document(biz["code"], int(parts[1]))
+        if not doc:
+            return send(chat_id,
+                        "⚠️ Sahi document number dein. Pehle /mydocs se "
+                        "list dekhein, fir /removedoc <id> bhejein.")
+        db.delete_document(biz["code"], doc["id"])
+        return send(chat_id,
+                    f"🗑️ Document #{doc['id']} ({doc['name']}) hat gaya. "
+                    "Support mode ab isse jawab nahi dega.")
     if text == "/mybusiness":
         biz = db.get_business_by_owner(user_id)
         if not biz:
@@ -1336,6 +1527,7 @@ def handle_message(msg):
                     f"🏢 *{biz['name']}*\n🔑 {biz['code']}\n"
                     f"🔗 https://t.me/{username}?start={biz['code']}\n"
                     f"❓ FAQs: {len(db.list_faqs(biz['code']))}\n"
+                    f"📄 Documents: {db.count_documents(biz['code'])}\n"
                     f"📝 Leads: {db.count_leads(biz['code'])}\n"
                     f"📅 Appointments: {db.count_appointments(biz['code'])}",
                     parse_mode="Markdown")
@@ -1443,13 +1635,93 @@ def handle_lang_callback(cb):
 # ----------------------------------------------------------------------
 # Health endpoint (free hosts need a web port) + polling loop
 # ----------------------------------------------------------------------
+# ----------------------------------------------------------------------
+# Pro v2 web layer (restored): Website chat UI + /api/chat on the SAME
+# backend. Telegram aur Website ek hi AI (Groq -> Gemini fallback)
+# use karte hain. API key sirf server env me rehti hai - browser ko
+# kabhi nahi jati. /health ka jawab pehle jaisa hi rakha hai - Render
+# aur UptimeRobot usi par nirbhar hain.
+# ----------------------------------------------------------------------
+WEB_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web")
+WEB_DAILY_LIMIT = int(os.environ.get("WEB_DAILY_LIMIT", "30"))
+_web_usage = {}  # "YYYY-MM-DD:<ip>" -> count (in-memory, resets on restart)
+
+
+def _web_rate_ok(ip):
+    import datetime
+    key = f"{datetime.date.today().isoformat()}:{ip}"
+    if _web_usage.get(key, 0) >= WEB_DAILY_LIMIT:
+        return False
+    _web_usage[key] = _web_usage.get(key, 0) + 1
+    return True
+
+
+def web_chat(mode, message):
+    """Website ke liye AI jawab. Support mode website par band hai -
+    woh sirf business ke Telegram link se chalta hai."""
+    if mode not in ("chat", "translator", "youtube", "business", "study", "research"):
+        mode = "chat"
+    messages = [{"role": "system", "content": build_system_prompt(mode)},
+                {"role": "user", "content": message}]
+    text, _provider = ai.chat(messages, quality=mode in QUALITY_MODES)
+    return text
+
+
 class HealthHandler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        self.send_response(200)
-        self.send_header("Content-Type", "application/json")
+    def _json(self, code, obj):
+        body = json.dumps(obj, ensure_ascii=False).encode("utf-8")
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
         self.end_headers()
-        self.wfile.write(json.dumps(
-            {"status": "ok", "service": "Vishal AI Assistant"}).encode())
+        self.wfile.write(body)
+
+    def do_GET(self):
+        if self.path in ("/health", "/healthz"):
+            return self._json(200, {"status": "ok",
+                                    "service": "Vishal AI Assistant"})
+        if self.path in ("/", "/index.html"):
+            try:
+                with open(os.path.join(WEB_DIR, "index.html"), "rb") as f:
+                    body = f.read()
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                return
+            except Exception as exc:
+                log.warning("Web UI serve failed: %s", type(exc).__name__)
+                return self._json(200, {"status": "ok",
+                                        "service": "Vishal AI Assistant"})
+        return self._json(404, {"error": "not found"})
+
+    def do_POST(self):
+        if self.path != "/api/chat":
+            return self._json(404, {"error": "not found"})
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+            payload = json.loads(self.rfile.read(length) or b"{}")
+        except Exception:
+            return self._json(400, {"reply": "⚠️ Request samajh nahi aayi."})
+        message = str(payload.get("message") or "").strip()
+        mode = str(payload.get("mode") or "chat")
+        if not message:
+            return self._json(400, {"reply": "⚠️ Pehle apna sawal likhein."})
+        if len(message) > Config.MAX_INPUT_CHARS:
+            return self._json(400, {"reply": f"⚠️ Message bahut lamba hai (max {Config.MAX_INPUT_CHARS} characters)."})
+        ip = (self.headers.get("X-Forwarded-For") or self.client_address[0]).split(",")[0].strip()
+        if not _web_rate_ok(ip):
+            return self._json(429, {"reply": "⏳ Aaj ki free website limit (30/din) khatm ho gayi hai. Telegram bot par bina is limit ke mode use karein: https://t.me/VishalSahayakBot"})
+        try:
+            reply = web_chat(mode, message)
+        except Exception as exc:  # AI layer must answer, never hang/crash
+            log.warning("Web chat failed: %s", type(exc).__name__)
+            return self._json(200, {"reply": "⚠️ AI abhi jawab nahi de paya. "
+                                             "Thodi der baad phir try karein, "
+                                             "ya Telegram bot use karein: "
+                                             "https://t.me/VishalSahayakBot"})
+        return self._json(200, {"reply": reply})
 
     def log_message(self, *args):
         pass
@@ -1457,7 +1729,7 @@ class HealthHandler(BaseHTTPRequestHandler):
 
 def start_health_server():
     try:
-        HTTPServer(("0.0.0.0", Config.PORT), HealthHandler).serve_forever()
+        ThreadingHTTPServer(("0.0.0.0", Config.PORT), HealthHandler).serve_forever()
     except Exception as exc:
         log.warning("Health server failed: %s", type(exc).__name__)
 

@@ -15,7 +15,26 @@ Telegram-native admin dashboard — fully manageable from an Android phone.
 🧠 DeepSeek AI Chat engine (optional, `/deepseek`) ·
 🗓 Daily Class Schedule (`/schedule`, IST, live class marked) ·
 📝 GK Quiz (`/quiz`, 10 sawal per session, original question bank, score) ·
+📄 Business Documents / RAG (`/adddoc`, `/mydocs`, `/removedoc`) ·
+🌐 Website chat UI (`/` + `/api/chat`) ·
 🛠️ Admin Dashboard (stats, leads, CSV export, broadcast, plan control)
+
+## Restored: Web UI + RAG (Pro v2/v3)
+Two features from the Pro builds are part of this codebase again:
+- **Website:** the bot's HTTP server serves a web chat page at `/`
+  (files in `web/`) and answers `POST /api/chat` — same AI backend as
+  Telegram, 30 free chats/day per visitor (`WEB_DAILY_LIMIT`).
+  Support mode stays Telegram-only. `/health` still returns the plain
+  `{"status": "ok", "service": "Vishal AI Assistant"}` JSON.
+- **RAG documents:** business owners run `/adddoc` and attach a PDF,
+  TXT file or long pasted text (fees lists, rules, course details).
+  The text is chunked, embedded with the existing Gemini key and
+  stored per business (`documents`/`doc_chunks` tables — works on
+  local SQLite and Turso alike). Support answers then cite the
+  business's own documents (`(Source: <name>)`); document text is
+  always treated as data, never as instructions. Without a Gemini
+  key, retrieval falls back to keyword matching. PDF reading needs
+  the optional `pypdf` package (in `requirements.txt`).
 
 ## Status (honest)
 Code complete. **44/44 local unit tests pass** (validation, business data

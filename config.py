@@ -62,6 +62,19 @@ class Config:
     MAX_INPUT_CHARS = int(os.environ.get("MAX_INPUT_CHARS", "2000"))
     MEMORY_TURNS = int(os.environ.get("MEMORY_TURNS", "6"))            # chat memory per user
 
+    # --- RAG (Pro v3): per-business document search for Support mode ---
+    # Embeddings use the SAME Gemini key as chat - no new key/account.
+    # Model name can be overridden via env if Google retires it.
+    GEMINI_EMBED_MODEL = os.environ.get("GEMINI_EMBED_MODEL", "gemini-embedding-001")
+    RAG_CHUNK_CHARS = int(os.environ.get("RAG_CHUNK_CHARS", "800"))
+    RAG_CHUNK_OVERLAP = int(os.environ.get("RAG_CHUNK_OVERLAP", "100"))
+    RAG_TOP_K = int(os.environ.get("RAG_TOP_K", "4"))
+    RAG_THRESHOLD = float(os.environ.get("RAG_THRESHOLD", "0.55"))
+    DOC_MAX_BYTES = int(os.environ.get("DOC_MAX_BYTES", str(5 * 1024 * 1024)))
+    DOC_MAX_PAGES = int(os.environ.get("DOC_MAX_PAGES", "50"))
+    DOC_MAX_CHUNKS = int(os.environ.get("DOC_MAX_CHUNKS", "500"))
+    DOC_TEXT_MIN_CHARS = int(os.environ.get("DOC_TEXT_MIN_CHARS", "20000"))  # pasted-text cap for /adddoc
+
     # --- Optional: Make.com webhook for lead -> Google Sheets/email ---
     # Leave empty to disable. This integration is OPTIONAL and is only
     # "working" once you test it with your own Make scenario (see docs).
