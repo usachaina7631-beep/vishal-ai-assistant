@@ -58,6 +58,7 @@ import requests
 
 import rag
 from ai_client import AIClient
+from ai_upgrade import choose_quality, clarifying_question, estimate_tokens
 from config import Config, validate
 from db import DB
 from prompts import MODE_LABELS, build_system_prompt
@@ -259,6 +260,13 @@ def ask_ai(user_id, mode, user_text, engine=None):
         if hits:
             rag_text = rag.format_context(hits)
             rag_sources = rag.source_names(hits)
+    # Course-derived upgrade (2026-11-15): a too-vague support question
+    # with no document answer gets ONE clarifying question instead of a
+    # guessed AI reply - and costs no AI call / usage at all.
+    if mode == "support" and not rag_text:
+        clarify = clarifying_question(mode, user_text)
+        if clarify:
+            return clarify
     messages = [{"role": "system",
                  "content": build_system_prompt(mode, business, faq_text,
                                                 rag_text)}]
@@ -268,7 +276,12 @@ def ask_ai(user_id, mode, user_text, engine=None):
         # User explicitly picked the DeepSeek engine with /deepseek
         text, _provider = ai.chat_deepseek(messages)
     else:
-        text, _provider = ai.chat(messages, quality=mode in QUALITY_MODES)
+        # Auto routing: mode gives the base tier; complex/long requests
+        # on a fast mode are upgraded to the quality model.
+        use_quality = choose_quality(mode, user_text, mode in QUALITY_MODES)
+        log.debug("AI route mode=%s quality=%s est_tokens=%s",
+                  mode, use_quality, estimate_tokens(user_text))
+        text, _provider = ai.chat(messages, quality=use_quality)
     if _provider and rag_sources and "(Source:" not in text:
         # Guarantee the citation even if the model forgot it.
         for src in rag_sources:
@@ -1663,7 +1676,8 @@ def web_chat(mode, message):
         mode = "chat"
     messages = [{"role": "system", "content": build_system_prompt(mode)},
                 {"role": "user", "content": message}]
-    text, _provider = ai.chat(messages, quality=mode in QUALITY_MODES)
+    text, _provider = ai.chat(
+        messages, quality=choose_quality(mode, message, mode in QUALITY_MODES))
     return text
 
 

@@ -39,7 +39,9 @@ MODES = {
         BASE + " You are the customer-support assistant for ONE business. Answer ONLY from "
         "the business information and FAQs given to you in this prompt. If the answer is "
         "not in that information, politely say you will connect them with the owner and "
-        "suggest they use the Lead or Appointment option. Never guess prices or timings."
+        "suggest they use the Lead or Appointment option. Never guess prices or timings. "
+        "If the question is missing a key detail (which course, class or service), ask ONE "
+        "short clarifying question before answering instead of listing everything."
     ),
     "study": (
         BASE + " You are a patient Indian teacher for school/competitive-exam students "

@@ -99,6 +99,23 @@ class AIClient:
             log.warning("AI provider deepseek failed: %s", type(exc).__name__)
             return ERROR_MSG, None
 
+    def chat_json(self, messages, keys, quality=False):
+        """Structured-output chat: ask for ONLY a JSON object with the
+        given keys and parse it. Return (dict_or_None, provider).
+        (None, provider) means the model replied but not in JSON —
+        the caller decides the fallback; (None, None) = provider error."""
+        from ai_upgrade import JSON_INSTRUCTION, extract_json
+        msgs = [dict(m) for m in messages]
+        instruction = JSON_INSTRUCTION.format(keys=", ".join(keys))
+        if msgs and msgs[0].get("role") == "system":
+            msgs[0]["content"] = msgs[0]["content"] + "\n" + instruction
+        else:
+            msgs.insert(0, {"role": "system", "content": instruction})
+        text, provider = self.chat(msgs, quality=quality)
+        if not provider:
+            return None, None
+        return extract_json(text), provider
+
     # ---- Public API ----
     def chat(self, messages, quality=False):
         """Return (text, provider_name) or (ERROR_MSG, None)."""
