@@ -34,21 +34,22 @@ class AIClient:
         self.session = session or requests.Session()
 
     # ---- Groq (OpenAI-compatible) ----
-    def _groq(self, messages, quality=False, timeout=60):
+    def _groq(self, messages, quality=False, timeout=60, temperature=None):
         model = Config.GROQ_MODEL_QUALITY if quality else Config.GROQ_MODEL_FAST
         resp = self.session.post(
             GROQ_URL,
             headers={"Authorization": f"Bearer {Config.GROQ_API_KEY}",
                      "Content-Type": "application/json"},
             json={"model": model, "messages": messages,
-                  "temperature": 0.6, "max_tokens": 1200},
+                  "temperature": 0.6 if temperature is None else temperature,
+                  "max_tokens": 1200},
             timeout=timeout,
         )
         resp.raise_for_status()
         return resp.json()["choices"][0]["message"]["content"].strip()
 
     # ---- Gemini ----
-    def _gemini(self, messages, timeout=60):
+    def _gemini(self, messages, timeout=60, temperature=None):
         system = "\n".join(m["content"] for m in messages if m["role"] == "system")
         contents = [
             {"role": "model" if m["role"] == "assistant" else "user",
@@ -56,6 +57,8 @@ class AIClient:
             for m in messages if m["role"] != "system"
         ]
         body = {"contents": contents}
+        if temperature is not None:
+            body["generationConfig"] = {"temperature": temperature}
         if system:
             body["system_instruction"] = {"parts": [{"text": system}]}
         resp = self.session.post(
@@ -69,14 +72,15 @@ class AIClient:
         return data["candidates"][0]["content"]["parts"][0]["text"].strip()
 
     # ---- DeepSeek (optional, OpenAI-compatible) ----
-    def _deepseek(self, messages, timeout=60):
+    def _deepseek(self, messages, timeout=60, temperature=None):
         base = (Config.DEEPSEEK_API_BASE or "https://api.deepseek.com").rstrip("/")
         resp = self.session.post(
             f"{base}/chat/completions",
             headers={"Authorization": f"Bearer {Config.DEEPSEEK_API_KEY}",
                      "Content-Type": "application/json"},
             json={"model": Config.DEEPSEEK_MODEL, "messages": messages,
-                  "temperature": 0.6, "max_tokens": 1200},
+                  "temperature": 0.6 if temperature is None else temperature,
+                  "max_tokens": 1200},
             timeout=timeout,
         )
         resp.raise_for_status()
@@ -117,13 +121,18 @@ class AIClient:
         return extract_json(text), provider
 
     # ---- Public API ----
-    def chat(self, messages, quality=False):
-        """Return (text, provider_name) or (ERROR_MSG, None)."""
+    def chat(self, messages, quality=False, temperature=None):
+        """Return (text, provider_name) or (ERROR_MSG, None).
+        temperature=None keeps the long-standing default (0.6); the
+        power pass passes explicit values only for self-consistency
+        sampling."""
         attempts = []
         if Config.GROQ_API_KEY:
-            attempts.append(("groq", lambda: self._groq(messages, quality)))
+            attempts.append(("groq", lambda: self._groq(
+                messages, quality, temperature=temperature)))
         if Config.GEMINI_API_KEY:
-            attempts.append(("gemini", lambda: self._gemini(messages)))
+            attempts.append(("gemini", lambda: self._gemini(
+                messages, temperature=temperature)))
         for name, fn in attempts:
             try:
                 return fn(), name

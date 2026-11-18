@@ -56,6 +56,7 @@ from zoneinfo import ZoneInfo
 
 import requests
 
+import ai_power
 import rag
 from ai_client import AIClient
 from ai_upgrade import choose_quality, clarifying_question, estimate_tokens
@@ -89,6 +90,10 @@ PLAN_LIMITS = {"free": Config.FREE_DAILY_LIMIT, "lite": 300,
 # 'chat' (AI Chat) is here on purpose: free-form AI Chat answers use the
 # quality model (Config.GROQ_MODEL_QUALITY) via ai_client's quality path.
 QUALITY_MODES = {"youtube", "research", "business", "chat"}
+# Power pass (2026-11-18): modes whose quality answers get the
+# reflection/evaluator pass. Support is excluded on purpose (facts
+# must stay exactly as sourced) and so is translator (exact output).
+REFLECT_MODES = {"chat", "youtube", "business", "study", "research"}
 
 # In-memory conversation state: user_id -> {"flow": ..., "step": ..., "data": {}}
 states = {}
@@ -267,11 +272,17 @@ def ask_ai(user_id, mode, user_text, engine=None):
         clarify = clarifying_question(mode, user_text)
         if clarify:
             return clarify
-    messages = [{"role": "system",
-                 "content": build_system_prompt(mode, business, faq_text,
-                                                rag_text)}]
+    system_prompt = build_system_prompt(mode, business, faq_text,
+                                        rag_text)
+    messages = [{"role": "system", "content": system_prompt}]
     messages += db.get_memory(user_id, mode, Config.MEMORY_TURNS)
     messages.append({"role": "user", "content": user_text})
+    # Power pass (2026-11-18): a prompt-injection attempt in the user
+    # message gets an explicit guard note, on top of the standing
+    # security rule in prompts.BASE.
+    if ai_power.detect_injection(user_text):
+        messages.insert(1, {"role": "system",
+                            "content": ai_power.INJECTION_GUARD_NOTE})
     if engine == "deepseek":
         # User explicitly picked the DeepSeek engine with /deepseek
         text, _provider = ai.chat_deepseek(messages)
@@ -281,7 +292,67 @@ def ask_ai(user_id, mode, user_text, engine=None):
         use_quality = choose_quality(mode, user_text, mode in QUALITY_MODES)
         log.debug("AI route mode=%s quality=%s est_tokens=%s",
                   mode, use_quality, estimate_tokens(user_text))
-        text, _provider = ai.chat(messages, quality=use_quality)
+        text, _provider = None, None
+        # ReAct tool loop (complex questions only, power pass
+        # 2026-11-18). Support mode: the model searches this business's
+        # own documents itself, reformulating queries as needed.
+        # Chat/research: an exact calculator + current date/time.
+        # Any failure returns None -> the plain path below runs.
+        if use_quality and mode == "support" and business:
+            def _search_docs(query, _code=business["code"]):
+                try:
+                    hits = rag.retrieve(db, _code, query)
+                except Exception:  # retrieval must never break support
+                    hits = []
+                if not hits:
+                    return ("No matching information found in the "
+                            "business documents.")
+                out = rag.format_context(hits)
+                for name in rag.source_names(hits):
+                    out += f"\nSOURCE: {name}"
+                return out
+
+            r_text, r_provider, r_sources = ai_power.react_answer(
+                ai, system_prompt, user_text,
+                {"search_docs": (
+                    "Search this business's own documents (fees, "
+                    "timings, courses, policies) with a short query",
+                    _search_docs)})
+            if r_provider:
+                text, _provider = r_text, r_provider
+                if r_sources:
+                    rag_sources = r_sources
+        elif use_quality and mode in ("chat", "research") \
+                and ai_power.needs_tools(user_text):
+            r_text, r_provider, _src = ai_power.react_answer(
+                ai, system_prompt, user_text,
+                {"calculator": (
+                    "Evaluate an exact arithmetic expression, "
+                    "e.g. '2500*18/100'",
+                    lambda expr: ai_power.safe_calculate(expr)
+                    or "Not a valid arithmetic expression."),
+                 "now": (
+                    "Get the current date and time (IST)",
+                    lambda _inp: ai_power.now_text())})
+            if r_provider:
+                text, _provider = r_text, r_provider
+        # Self-consistency: a verifiable study question (maths /
+        # numeric / MCQ) is sampled 3 times and the majority answer
+        # wins. No majority -> plain path below.
+        if text is None and mode == "study" and use_quality \
+                and ai_power.is_verifiable_question(user_text):
+            s_text, s_provider = ai_power.self_consistent_answer(
+                ai, messages)
+            if s_provider:
+                text, _provider = s_text, s_provider
+        if text is None:
+            text, _provider = ai.chat(messages, quality=use_quality)
+            # Reflection: quality answers get one evaluator pass; a
+            # weak draft is rewritten once. Fail-safe inside the
+            # helper - it can only improve, never break, the reply.
+            if _provider and use_quality and mode in REFLECT_MODES \
+                    and len(text) >= 200:
+                text = ai_power.reflect_and_improve(ai, messages, text)
     if _provider and rag_sources and "(Source:" not in text:
         # Guarantee the citation even if the model forgot it.
         for src in rag_sources:
@@ -1676,8 +1747,13 @@ def web_chat(mode, message):
         mode = "chat"
     messages = [{"role": "system", "content": build_system_prompt(mode)},
                 {"role": "user", "content": message}]
-    text, _provider = ai.chat(
-        messages, quality=choose_quality(mode, message, mode in QUALITY_MODES))
+    use_quality = choose_quality(mode, message, mode in QUALITY_MODES)
+    text, _provider = ai.chat(messages, quality=use_quality)
+    # Power pass (2026-11-18): same reflection pass as the Telegram
+    # path, quality website answers only.
+    if _provider and use_quality and mode in REFLECT_MODES \
+            and len(text) >= 200:
+        text = ai_power.reflect_and_improve(ai, messages, text)
     return text
 
 
