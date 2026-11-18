@@ -131,6 +131,14 @@ _TOOL_HINTS = (
     "total kitna", "kitna hoga", "kitne honge", "gunna", "भाग",
     "aaj ki date", "aaj ka din", "today's date", "current date",
     "abhi time", "samay kya",
+    # time/date phrasings users actually type (added 2026-11-18 after
+    # the owner's live test: 'Aaj kitna time ho raha hai' slipped past
+    # the first hint list and the bot wrongly claimed it has no clock)
+    "kitna time", "time kya", "kya time", "time ho raha",
+    "kitna baja", "kitne baje", "baj raha", "baj rahe",
+    "samay kitna", "samay kya hai", "कितना समय", "समय कितना",
+    "कितना बजा", "आज की तारीख", "tarikh kya", "date kya",
+    "din kaunsa", "kaunsa din", "aaj kaun sa din",
 )
 
 
