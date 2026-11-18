@@ -96,6 +96,13 @@ class TestGates(unittest.TestCase):
     def test_needs_tools_date(self):
         self.assertTrue(ai_power.needs_tools("Aaj ki date kya hai?"))
 
+    def test_needs_tools_time_phrasings(self):
+        # Owner's live test 2026-11-18: this exact question must
+        # reach the clock tool, not the plain path.
+        for q in ("Aaj kitna time ho raha hai", "Abhi kitne baje hain?",
+                  "Samay kitna hua?", "आज की तारीख क्या है?"):
+            self.assertTrue(ai_power.needs_tools(q), q)
+
     def test_needs_tools_plain_chat(self):
         self.assertFalse(ai_power.needs_tools("Namaste, kaise ho?"))
 
