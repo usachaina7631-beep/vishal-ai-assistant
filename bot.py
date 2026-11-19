@@ -1,5 +1,5 @@
 """
-Vishal AI Assistant - Telegram bot (long-polling, no framework needed).
+Ask AI - Telegram bot (long-polling, no framework needed).
 
 Pro features
 ------------
@@ -191,7 +191,9 @@ def main_keyboard():
 LABEL_TO_MODE = {v: k for k, v in MODE_LABELS.items()}
 
 WELCOME = (
-    "🙏 Namaste! Main hoon *Vishal AI Assistant*.\n\n"
+    "🙏 Namaste! Main hoon *Ask AI* — ek AI bot.\n"
+    "Main padhai me madad karta hu; mahatvapurn jaankari hamesha "
+    "official source se verify karein.\n\n"
     "Main aapki madad kar sakta hoon:\n"
     "💬 AI Chat • 🔤 Hindi-English Translator\n"
     "🎬 YouTube Content • 💼 Business Help\n"
@@ -1769,7 +1771,7 @@ class HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path in ("/health", "/healthz"):
             return self._json(200, {"status": "ok",
-                                    "service": "Vishal AI Assistant"})
+                                    "service": "Ask AI"})
         if self.path in ("/", "/index.html"):
             try:
                 with open(os.path.join(WEB_DIR, "index.html"), "rb") as f:
@@ -1783,7 +1785,7 @@ class HealthHandler(BaseHTTPRequestHandler):
             except Exception as exc:
                 log.warning("Web UI serve failed: %s", type(exc).__name__)
                 return self._json(200, {"status": "ok",
-                                        "service": "Vishal AI Assistant"})
+                                        "service": "Ask AI"})
         return self._json(404, {"error": "not found"})
 
     def do_POST(self):
@@ -1833,7 +1835,7 @@ def main():
             raise SystemExit("Fix the config problems above, then restart. "
                              "See docs/02-SETUP.md")
     threading.Thread(target=start_health_server, daemon=True).start()
-    log.info("Vishal AI Assistant started (polling). Admin ids: %s",
+    log.info("Ask AI started (polling). Admin ids: %s",
              sorted(Config.ADMIN_IDS))
     tg("deleteWebhook")  # polling and webhook cannot run together
     offset = 0
