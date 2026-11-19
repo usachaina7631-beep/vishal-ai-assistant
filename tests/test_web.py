@@ -51,12 +51,12 @@ class TestWebLayer(unittest.TestCase):
         data = json.loads(body)
         self.assertEqual(data["status"], "ok")
         # The live lineage's health shape - Render/UptimeRobot depend on it
-        self.assertEqual(data["service"], "Vishal AI Assistant")
+        self.assertEqual(data["service"], "Ask AI")
 
     def test_index_is_website_not_json(self):
         status, body = self._get("/")
         self.assertEqual(status, 200)
-        self.assertIn("VISHAL AI", body)
+        self.assertIn("ASK AI", body)
         self.assertIn("/api/chat", body)
         self.assertIn("VishalSahayakBot", body)
 
