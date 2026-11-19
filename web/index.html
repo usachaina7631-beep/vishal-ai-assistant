@@ -3,8 +3,8 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>VISHAL AI — Aapka Personal AI Agent | Pro v2.1</title>
-<meta name="description" content="Vishal AI — Hindi aur English me AI chat, YouTube script, business help, study help. Telegram aur Website, ek hi AI dimaag.">
+<title>ASK AI — Aapka Personal AI Agent | Pro v2.1</title>
+<meta name="description" content="Ask AI — Hindi aur English me AI chat, YouTube script, business help, study help. Telegram aur Website, ek hi AI dimaag.">
 <style>
 :root{--bg:#070812;--card:#12122b;--card2:#1a1a3a;--acc:#7c5cff;--acc2:#00c2a8;--txt:#f2f2fa;--mut:#a7a7c7;--line:#2a2a4d}
 *{box-sizing:border-box}body{margin:0;padding-bottom:176px;font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;background:var(--bg);color:var(--txt)}
@@ -37,7 +37,7 @@ a.tg{display:inline-block;margin-top:8px;background:#229ed9;color:#fff;text-deco
 </head>
 <body>
 <header>
-  <h1>VISHAL AI</h1>
+  <h1>ASK AI</h1>
   <p class="sub">PERSONAL AI ASSISTANT · PRO VERSION 2.1<br>आपका Personal AI Agent — Telegram + Website, एक ही AI दिमाग</p>
   <span class="badge">Free-tier architecture · ₹0 shuruaati kharch</span>
 </header>
@@ -58,7 +58,7 @@ a.tg{display:inline-block;margin-top:8px;background:#229ed9;color:#fff;text-deco
 </div>
 
 <div class="modes" id="modes"></div>
-<div class="typing" id="typing">Vishal soch raha hai…</div>
+<div class="typing" id="typing">Ask AI soch raha hai…</div>
 <div id="chat"></div>
 
 <div class="bar"><div class="bar-in">
@@ -75,7 +75,7 @@ let mode="chat";
 const modesEl=document.getElementById('modes'),chatEl=document.getElementById('chat'),qEl=document.getElementById('q');
 MODES.forEach(([k,label])=>{const b=document.createElement('button');b.className='chip'+(k===mode?' on':'');b.textContent=label;b.onclick=()=>{mode=k;document.querySelectorAll('.chip').forEach(c=>c.classList.remove('on'));b.classList.add('on');add('ai','Mode ON: '+label+'. Apna sawal likhein 👇')};modesEl.appendChild(b)});
 function add(who,text){const d=document.createElement('div');d.className='msg '+who;d.textContent=text;if(who==='ai'){const s=document.createElement('small');const c=document.createElement('button');c.textContent='📋 Copy';c.onclick=()=>navigator.clipboard&&navigator.clipboard.writeText(text);const v=document.createElement('button');v.textContent='🔊 Suno';v.onclick=()=>{try{const u=new SpeechSynthesisUtterance(text.slice(0,600));u.lang=/[\u0900-\u097F]/.test(text)?'hi-IN':'en-IN';speechSynthesis.speak(u)}catch(e){}};s.appendChild(c);s.appendChild(v);d.appendChild(s)}chatEl.appendChild(d);chatEl.scrollTop=chatEl.scrollHeight;return d}
-add('ai','🙏 Namaste! Main hoon Vishal AI. Upar se mode chunein ya seedha apna sawal likhein — Hindi ya English, dono chalega.');
+add('ai','🙏 Namaste! Main hoon Ask AI. Upar se mode chunein ya seedha apna sawal likhein — Hindi ya English, dono chalega.');
 async function send(){const text=qEl.value.trim();if(!text)return;qEl.value='';add('me',text);const t=document.getElementById('typing');t.style.display='block';
  try{const r=await fetch('/api/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({mode,message:text})});const j=await r.json();add('ai',j.reply||'⚠️ Jawab nahi aaya, phir try karein.')}
  catch(e){add('ai','⚠️ Network dikkat hai. Internet check karke phir try karein.')}finally{t.style.display='none'}}
